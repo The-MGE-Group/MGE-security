@@ -133,7 +133,8 @@ every planted problem is found and the clean versions pass:
 - [fixtures/vulnerable](fixtures/vulnerable) and [fixtures/clean](fixtures/clean) test the pull-request scan.
 - [fixtures/live](fixtures/live) is a small fake app and fake Supabase. It is started with planted
   problems and then locked down, to test the weekly scan.
-- The production guard is tested separately.
+- The production guard is tested separately, and so is the issue code, against a fake GitHub
+  (opening once, never reopening a closed issue, closing only when the tool ran cleanly).
 - The Supabase advisor can't run without a real project, so only its report handling is tested,
   using sample output.
 
