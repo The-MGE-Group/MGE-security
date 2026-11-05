@@ -84,8 +84,9 @@ jobs:
           echo "Opengrep rules: $(find rules -name '*.yaml' | wc -l) files"
 
       - name: Secrets (Gitleaks)
+        if: always()
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           ok=1
           gitleaks dir "$SCAN_PATH" --no-banner --redact --exit-code 0 \
             --report-format json --report-path "$RAW_DIR/gitleaks-files.json" || ok=0
@@ -98,8 +99,9 @@ jobs:
           [ $ok = 1 ] && echo ok > "$RAW_DIR/status/gitleaks" || echo "failed, see the step log" > "$RAW_DIR/status/gitleaks"
 
       - name: Live keys (TruffleHog, verified only)
+        if: always()
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           ok=1
           trufflehog filesystem "$SCAN_PATH" --results=verified --json --no-update \
             > "$RAW_DIR/trufflehog.json" || ok=0
@@ -111,10 +113,11 @@ jobs:
           [ $ok = 1 ] && echo ok > "$RAW_DIR/status/trufflehog" || echo "failed, see the step log" > "$RAW_DIR/status/trufflehog"
 
       - name: Vulnerable or malicious packages, and licenses (OSV-Scanner)
+        if: always()
         env:
           ALLOWED: ${{ inputs.allowed-licenses }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           osv-scanner scan source -r "$SCAN_PATH" --format json --licenses="$ALLOWED" > "$RAW_DIR/osv.json"
           code=$?
           case $code in
@@ -125,8 +128,9 @@ jobs:
           esac
 
       - name: Risky code patterns (Opengrep)
+        if: always()
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           opengrep scan --config "$RUNNER_TEMP/rules" --json --output "$RAW_DIR/opengrep.json" "$SCAN_PATH"
           echo "exit code $?"
           if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert "results" in d; [print("note:", e.get("message","")[:300]) for e in d.get("errors",[])[:20]]' "$RAW_DIR/opengrep.json"; then
