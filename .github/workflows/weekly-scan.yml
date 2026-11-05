@@ -750,16 +750,25 @@ jobs:
           # ---------- testssl.sh ----------
           TSEV = {"CRITICAL": "critical", "HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
           ts = load("testssl.json") or []
+          ciphers = {}
           for r in ts if isinstance(ts, list) else ts.get("scanResult", []):
-              sev = TSEV.get(str(r.get("severity", "")).upper())
-              if not sev:
+              sev, rid = TSEV.get(str(r.get("severity", "")).upper()), str(r.get("id", ""))
+              if not sev or rid == "overall_grade":  # the grade only repeats the findings below
                   continue
               host = f"{r.get('ip', '')}:{r.get('port', '')}".strip(":")
-              add("testssl", "tls", sev, f"HTTPS setting: {r.get('id')}", f"`{host}`",
-                  f"testssl.sh check `{r.get('id')}` on `{host}` reported: {r.get('finding')}",
+              if rid.startswith("cipher-") or rid.startswith("cipher_"):  # one finding for all old ciphers
+                  ciphers.setdefault((host, sev), []).append(f"{r.get('finding')}")
+                  continue
+              add("testssl", "tls", sev, f"HTTPS setting: {rid}", f"`{host}`",
+                  f"testssl.sh check `{rid}` on `{host}` reported: {r.get('finding')}",
                   "If the site is hosted on Vercel, Vercel controls these settings; check it is a real problem on your "
                   "own domain before acting. Otherwise fix the server's HTTPS configuration.",
-                  f"{r.get('id')}|{host}")
+                  f"{rid}|{host}")
+          for (host, sev), found in ciphers.items():
+              add("testssl", "tls", sev, f"HTTPS: {len(found)} old encryption cipher(s) still offered", f"`{host}`",
+                  f"testssl.sh on `{host}` found: " + "; ".join(found[:10]),
+                  "Turn off these ciphers in the server's HTTPS settings (on Vercel, Vercel controls this).",
+                  f"ciphers|{host}|{sev}")
 
           # ---------- Supabase security advisor ----------
           LEVEL = {"ERROR": "high", "WARN": "medium", "INFO": "low"}
@@ -825,7 +834,8 @@ jobs:
 
           for heading, items in inventory.items():
               if items:
-                  md += [f"## {heading}", ""] + [f"- `{i}`" for i in items[:200]] + [""]
+                  md += [f"## {heading}", ""] + [f"- `{i}`" for i in items[:200]]
+                  md += ([f"- _{len(items) - 200} more in `findings.json`_"] if len(items) > 200 else []) + [""]
 
           NOT_CHECKED = {
               "pr": [

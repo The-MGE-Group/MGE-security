@@ -1,42 +1,44 @@
 # Roadmap
 
-## Step 1: every pull request (built)
+Ratings from the owner's list: (a) solid with a free tool, (b) possible with AI help but with
+limits, (c) not possible or not worth it right now.
 
-Secrets (Gitleaks, TruffleHog), vulnerable and malicious packages and licenses (OSV-Scanner),
-risky code patterns (Opengrep). Plain-English report, red check on critical or high findings,
-GitHub issues on pushes to `main`. Target: under 5 minutes. See the [README](../README.md).
+## Built
 
-## Step 2: nightly (not built)
+| # | Item | Rating | Where |
+|---|---|---|---|
+| 1 | Dependency scanning (CVEs) | a | PR scan, OSV-Scanner |
+| 2 | Package list (SBOM) | a | PR scan, `sbom.cdx.json` |
+| 3 | Malicious packages | a | PR scan, OSV-Scanner |
+| 4 | Code scanning | a | PR scan, Opengrep |
+| 5 | Custom code rules (simple patterns) | a | `rules/mge.yaml` |
+| 6 | Secrets | a | PR scan, Gitleaks + TruffleHog |
+| 7 | License risk | a | PR scan, OSV-Scanner |
+| 8 | Outdated software | a | `templates/dependabot.yml` |
+| 10 | Scanning the running site (ZAP, Nuclei) | a | Weekly scan |
+| 12 | Attack surface (public subdomain list, exposed files) | a | Weekly scan, Subfinder + Nuclei |
+| 13 | SSL and headers | a | Weekly scan, testssl.sh + ZAP |
+| 14 | Supabase security advisor | a | Weekly scan |
+| 22 | Role and cross-tenant access | a | Weekly scan, access test |
+| 23 | Retesting | a | Issues close themselves when a later full scan no longer finds them |
 
-- Deeper versions of the step 1 scans, for example the full git history with TruffleHog on every
-  branch, and Opengrep rules that are too slow or too noisy for pull requests.
-- AI code review and triage with
-  [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action), pinned to an
-  exact commit. It reads the code and the step 1 findings, removes likely false alarms, and looks
-  for logic problems the rules can't see (for example a query that forgets `tenant_id`).
-  Every AI finding must still point to an exact file and line, or it is not reported.
-- Needs: an `ANTHROPIC_API_KEY` secret, which the owner adds.
-- Honest limit: AI review misses things and sometimes invents them. It is a second opinion, not
-  proof.
+## Not built yet, waiting for the owner's decision
 
-## Step 3: weekly, against a preview or test deployment only (not built)
+| # | Item | Rating | Notes |
+|---|---|---|---|
+| 5 | Custom rules for tenant checks | b | Rules can spot a query without `tenant_id`, but can't prove the filter is right |
+| 9 | Server-setup files and containers (Checkov) | c for now | Almost none exist; add if Docker or Terraform appear |
+| 11 | API fuzzing (Schemathesis) | b | Needs an OpenAPI file; AI can draft one, but may miss routes |
+| 15 | Vercel settings checks | b | No off-the-shelf tool; would be a checklist script against Vercel's API |
+| 16 | Prowler | c | No AWS, Azure or Google Cloud in use |
+| 17 | AI code review | b | Needs an `ANTHROPIC_API_KEY` secret |
+| 18 | AI auto-triage | b | AI may label "likely false alarm", never remove or unblock |
+| 19 | AI auto-fix | b | AI opens a fix PR for review; Dependabot already covers package upgrades |
+| 20 | AI pentest stage | b, c for "equal to a human pentest" | |
+| 21 | Business-logic tests | b | Needs the rules written down in plain English |
 
-Never against production.
+## Known gaps in what's built
 
-- DAST (testing the running app from outside): [ZAP](https://www.zaproxy.org/) and
-  [Nuclei](https://github.com/projectdiscovery/nuclei).
-- API fuzzing: [Schemathesis](https://github.com/schemathesis/schemathesis). Needs an OpenAPI
-  description of the API, or one written for it.
-- TLS and security headers: [testssl.sh](https://github.com/testssl/testssl.sh).
-- AI pentest stage, guided by the results above.
-- Cross-tenant test for multi-tenant apps such as MGE Insights: log in as a tenant A test user and
-  try every route against tenant B's data. Any success is a critical finding with the exact
-  request as proof.
-- Needs: a test deployment URL, two test tenants with test users, and their logins stored as
-  secrets by the owner.
-
-## Open question for the owner
-
-The owner will send their own list of the exact tests they want. Each item will be marked as
-(a) solid with a free tool, (b) possible with AI help but with limits, or (c) not possible or not
-worth it. No item is dropped without the owner deciding.
+- ZAP and Nuclei scan as a logged-out visitor.
+- The Supabase advisor, the Vercel bypass header and the `@supabase/ssr` login cookie have only
+  been tested against the fake app, not a real project. They get tested when a project is connected.

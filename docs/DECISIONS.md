@@ -9,13 +9,14 @@ uploaded report (`report.md` and `findings.json`), and GitHub issues. No server,
 GitHub's code-scanning upload (SARIF) is not used because on private repositories it needs paid
 GitHub Code Security.
 
-## 2. The report script lives inside the workflow file
+## 2. Helper scripts are copied into the workflow files
 
-When another private repository calls this workflow, its `GITHUB_TOKEN` can only read that
-repository, so the workflow can't download extra files from this one. The report script is
-therefore copied into `pr-scan.yml`. The source is `scripts/report.py` and
-`scripts/pr-scan.template.yml`; `python3 scripts/build.py` rebuilds the workflow, and the
-self-test fails if someone forgets.
+When another private repository calls these workflows, its `GITHUB_TOKEN` can only read that
+repository, so the workflows can't download extra files from this one. Each workflow therefore
+carries copies of the files it needs, between `>>> BEGIN <file>` and `<<< END <file>` lines.
+`python3 scripts/build.py` refreshes the copies, and the self-test fails if one is stale. The
+workflow files themselves are the source for everything else, so Dependabot can update the
+pinned actions in them directly.
 
 ## 3. Every tool pinned, and checked before it runs
 
@@ -58,13 +59,14 @@ to Next.js or Supabase. Their license is LGPL 2.1 with the Commons Clause, which
 to scan our own code but not selling a product built on them. If MGE Security were ever sold as a
 service, this needs revisiting.
 
-## 6. "Outdated software" is not checked yet
+## 6. Outdated software: Dependabot, not a scanner
 
-The plan listed "outdated software" under Trivy. Trivy does not report outdated npm or Python
-packages; it reports known vulnerabilities (OSV-Scanner already does that) and end-of-life
-operating systems inside container images, which Vercel projects don't have. So no tool in step 1
-checks for packages that are simply old. This is left for the owner to decide. Option: GitHub's
-own Dependabot version updates, which are free and open pull requests to update old packages.
+Trivy does not report outdated npm or Python packages; it reports known vulnerabilities
+(OSV-Scanner already does that) and end-of-life operating systems in container images, which
+Vercel projects don't have. GitHub's Dependabot is free, opens pull requests to update old packages,
+and can wait 14 days after each release (`cooldown`) so a hijacked release has time to be noticed.
+Security fixes are not delayed ([GitHub docs](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference)).
+Projects copy `templates/dependabot.yml`; this repository uses it for its own actions.
 
 ## 7. Whole project scanned on every pull request
 
@@ -73,12 +75,17 @@ current files on pull requests, and the full git history on pushes to `main` and
 OSV-Scanner and Opengrep check the whole project, not just changed lines. This means problems
 that already exist will also turn the check red until they are fixed or marked as false alarms.
 
-## 8. Issues only outside pull requests, never duplicated
+## 8. Issues: opened once, closed when fixed
 
-GitHub issues are opened for blocking findings on pushes to `main` and manual runs, never on pull
-requests (the red check is the signal there; issues per pull request would pile up). Each issue
-carries a hidden ID, so the same finding never gets a second issue, even after the first is
-closed. At most 20 new issues per run.
+GitHub issues are opened for blocking findings on pushes to `main`, manual runs and weekly scans,
+never on pull requests (the red check is the signal there). Each issue carries a hidden ID, so a
+finding never gets a second issue, even after the first is closed by hand. At most 20 new issues
+per run.
+
+Retesting: when a later full scan no longer finds an issue's problem, the issue gets a comment and
+is closed. This only happens when the tool that found it ran cleanly in that scan, so a crashed or
+skipped tool can never close an issue, and pull-request scan issues only close after a scan of the
+whole project.
 
 ## 9. A broken scan is a failed scan
 
@@ -90,3 +97,60 @@ a tool that crashed must never look like a pass.
 The check turns red on its own. Making GitHub refuse the merge needs a ruleset with a required
 status check, and on private repositories rulesets need GitHub Team or Enterprise
 ([GitHub docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)).
+
+## 11. Weekly scan: one reusable workflow, test deployments only
+
+`weekly-scan.yml` takes the test address and a required list of production host names. Its first
+step refuses to run if the address uses one of those names (letter case, ports and paths don't
+matter), and no scanner step runs unless that check passed. While building this, the scanner steps
+were first written to run even after a refusal; the self-test caught that a refused run would
+still have scanned, and it was fixed before anything used it. Each scanner can be skipped
+(for example no Supabase project given); skipped checks are shown in the report, never hidden.
+
+## 12. The access test is our own script, not an off-the-shelf tool
+
+No free tool knows which tenant a record belongs to, so `scripts/access_test.py` does it, using
+only Python's standard library:
+- Logs in each test user with Supabase email and password, then sends the login the way the app
+  expects: a bearer header, or the cookie `@supabase/ssr` uses (`base64-` plus the session).
+- Route checks: a cross-tenant read counts as a leak only if the other tenant's marker text comes
+  back, so an empty answer is not reported as a leak. For role checks inside one tenant, any
+  success counts.
+- Database checks: for every table with a `tenant_id` column (found automatically, or listed in
+  the config), each user and a logged-out visitor ask Supabase for another tenant's rows.
+- "Allowed" control checks must pass. Otherwise the test is broken (for example a failed login)
+  and the run says "Could not finish". Without this, a broken login would make every refusal
+  check pass.
+- Next.js routes with no test are listed in the report, so gaps are visible.
+- Secrets: the step receives the repository's secrets (`toJSON(secrets)`) because the config names
+  them; it only reads the names in the config and never prints them. GitHub masks them in logs.
+
+Limit: Supabase may block automatic table listing for the public key. The config's `tables` list
+is the fallback, and the run fails, rather than passing, if no tables can be found.
+
+## 13. Weekly scanner choices
+
+- ZAP runs `baseline` by default: it browses and looks, but doesn't attack. `full` is available,
+  but it submits forms and can change test data. The Vercel bypass header is only sent to the
+  target host.
+- Nuclei runs the `http`, `ssl` and `dns` templates of one pinned template release, without
+  denial-of-service and fuzzing templates, without its outside callback server (`-ni`), and
+  without the two token-guessing templates its own "recommended" profile also leaves out.
+- testssl.sh tests whatever host is scanned. On a `vercel.app` address that is Vercel's setup,
+  so its findings there say little about your own domain.
+- Subfinder only reads public sources. Its list is information, never a finding, because the
+  weekly scan never touches production.
+- Supabase advisor: Supabase's API accepts fine-grained tokens with only the `advisors_read`
+  permission ([Supabase docs](https://supabase.com/docs/reference/api/v1-get-security-advisors)).
+  Use one of those, never a full account token. The endpoint is marked experimental.
+- Versions (all at least about two weeks old on 2026-11-05): Nuclei 3.11.1, nuclei-templates
+  10.5.0, Subfinder 2.17.0, testssl.sh 3.2.4 (3.2.5 was one day old), ZAP 2.17.0 by image digest.
+  Nuclei and Subfinder checksums match the publisher's checksum files.
+
+## 14. MGE code rules: three, all simple
+
+`rules/mge.yaml` holds only patterns that are clearly wrong when they match: a secret-named
+`NEXT_PUBLIC_` variable, the Supabase secret key in a `"use client"` file (both block), and
+`getSession()` used on the server, which Supabase's own server-side guide warns against ([Supabase docs](https://supabase.com/docs/guides/auth/server-side/nextjs)) (reported
+only). Checking that every query filters by tenant is not a simple pattern, so it is left to the
+access test.
