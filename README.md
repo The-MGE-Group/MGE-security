@@ -120,7 +120,8 @@ Rules for the access test:
 ## When a finding is a false alarm
 
 - Gitleaks: add the line shown in the report to `.gitleaksignore` in the project.
-- Opengrep: add a `// nosemgrep` comment on the flagged line.
+- Opengrep: put `// nosemgrep: <rule-name> -- <reason>` on the flagged line or the line above. The rule
+  name must come first, because every word after the colon is read as a rule name.
 - OSV-Scanner: add the advisory to `osv-scanner.toml` next to the lockfile, with a reason
   ([how](https://google.github.io/osv-scanner/configuration/)).
 - Then close the GitHub issue. A closed issue is never reopened for the same finding.

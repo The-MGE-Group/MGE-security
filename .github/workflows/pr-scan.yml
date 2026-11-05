@@ -457,8 +457,9 @@ jobs:
                   f"Risky code pattern: {short}",
                   link(path, line),
                   f"Rule `{short}` matched at {path} line {line}: {extra.get('message', '').strip()}",
-                  "Read the rule message above and change the code. If it is a false alarm, add a `// nosemgrep` "
-                  "comment on that line with a short reason.",
+                  "Read the rule message above and change the code. If it is a false alarm, put "
+                  f"`// nosemgrep: {short} -- <reason>` on that line or the line above. The rule name must come first: "
+                  "words after the colon are read as rule names.",
                   f"{rule}|{path}|{line}")
 
 
