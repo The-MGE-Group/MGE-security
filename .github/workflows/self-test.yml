@@ -1,5 +1,6 @@
-# Proves the PR scan works: each scanner must catch its planted problem in
-# fixtures/vulnerable, and a clean project (fixtures/clean) must pass.
+# Proves the scans work: each scanner must catch its planted problem, and a clean
+# project must pass. PR scan: fixtures/vulnerable and fixtures/clean.
+# Weekly scan: the fake app in fixtures/live, started with and without planted problems.
 name: Self-test
 
 on:
@@ -12,17 +13,16 @@ permissions:
 
 jobs:
   up-to-date:
-    name: Workflow matches its source
+    name: Workflow copies and report script
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Rebuild pr-scan.yml from scripts/ and compare
-        run: |
-          python3 scripts/build.py
-          git diff --exit-code -- .github/workflows/pr-scan.yml || {
-            echo "::error::pr-scan.yml is out of date. Run: python3 scripts/build.py"; exit 1; }
+      - name: Workflow copies match scripts/ and rules/
+        run: python3 scripts/build.py --check
+      - name: Report script handles sample Supabase advisor output
+        run: python3 scripts/test_report.py
 
   vulnerable:
     name: Scan the vulnerable fixture
@@ -47,9 +47,54 @@ jobs:
       create-issues: false
       artifact-name: selftest-clean
 
+  weekly-leaky:
+    name: Weekly scan of the app with planted problems
+    uses: ./.github/workflows/weekly-scan.yml
+    permissions:
+      contents: read
+      issues: write
+    with:
+      target-url: http://localhost:8080
+      production-hosts: mge-insights.example
+      access-config: fixtures/live/access-test.json
+      tls-target: localhost:8443
+      nuclei-templates: http/exposures/configs/git-config.yaml
+      root-domain: example.com
+      block-on: none
+      create-issues: false
+      artifact-name: selftest-weekly-leaky
+      setup-command: bash fixtures/live/start.sh --leaky
+
+  weekly-clean:
+    name: Weekly scan of the locked-down app
+    uses: ./.github/workflows/weekly-scan.yml
+    permissions:
+      contents: read
+      issues: write
+    with:
+      target-url: http://localhost:8080
+      production-hosts: mge-insights.example
+      access-config: fixtures/live/access-test.json
+      nuclei-templates: http/exposures/configs/git-config.yaml
+      create-issues: false
+      artifact-name: selftest-weekly-clean
+      setup-command: bash fixtures/live/start.sh
+
+  weekly-refuses-production:
+    name: Weekly scan refuses a production address
+    uses: ./.github/workflows/weekly-scan.yml
+    permissions:
+      contents: read
+      issues: write
+    with:
+      target-url: https://MGE-Insights.example/dashboard
+      production-hosts: "other.example, mge-insights.example"
+      create-issues: false
+      artifact-name: selftest-weekly-refused
+
   check:
     name: Check the results
-    needs: [vulnerable, clean]
+    needs: [vulnerable, clean, weekly-leaky, weekly-clean, weekly-refuses-production]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -60,6 +105,9 @@ jobs:
         env:
           CLEAN_RESULT: ${{ needs.clean.result }}
           VULN_RESULT: ${{ needs.vulnerable.result }}
+          WEEKLY_LEAKY_RESULT: ${{ needs.weekly-leaky.result }}
+          WEEKLY_CLEAN_RESULT: ${{ needs.weekly-clean.result }}
+          REFUSED_RESULT: ${{ needs.weekly-refuses-production.result }}
         run: |
           python3 - <<'PY'
           import json, os, sys
@@ -78,6 +126,10 @@ jobs:
           check("OSV found vulnerable lodash 4.17.15", has("osv", "vulnerable-dependency", "lodash@4.17.15"))
           check("OSV found malicious flatmap-stream 0.1.1", has("osv", "malicious-package", "flatmap-stream@0.1.1"))
           check("OSV flagged the GPL package", has("osv", "license", "GPL"))
+          for rule in ("mge-next-public-secret", "mge-supabase-service-role-in-browser-code", "mge-supabase-getsession-on-server"):
+              check(f"MGE rule {rule} fired", has("opengrep", "code", rule))
+          sbom = open("selftest-vulnerable/sbom.cdx.json").read()
+          check("Package list (SBOM) lists lodash 4.17.15", '"lodash"' in sbom and "4.17.15" in sbom)
           check("Vulnerable fixture would block a merge at the default level",
                 any(f["severity"] in ("critical", "high") for f in v["findings"]))
           check("Vulnerable scan job finished (block-on none)", os.environ["VULN_RESULT"] == "success")
@@ -85,5 +137,33 @@ jobs:
               check(f"{t} ran on the clean fixture ({s})", s.startswith("ok"))
           check(f"Clean fixture has no findings (found {len(c['findings'])})", not c["findings"])
           check("Clean scan job passed", os.environ["CLEAN_RESULT"] == "success")
+
+          # ---------- Weekly scan ----------
+          w = json.load(open("selftest-weekly-leaky/findings.json"))
+          k = json.load(open("selftest-weekly-clean/findings.json"))
+          def whas(tool, text, levels=("critical", "high", "medium", "low")):
+              return any(f["tool"] == tool and f["severity"] in levels and text in f["title"] + f["proof"] for f in w["findings"])
+          for t, s in w["tools"].items():
+              check(f"{t} on the leaky app: {s}", s.startswith("ok") if t != "supabase" else s.startswith("skipped"))
+          check("Access test caught tenant A reading tenant B's report", whas("access", "GET /api/reports/2", ("critical",)))
+          check("Access test caught tenant B reading tenant A's report", whas("access", "GET /api/reports/1", ("critical",)))
+          check("Access test caught a member deleting a report", whas("access", "DELETE /api/reports/1", ("high",)))
+          check("Access test caught the database leak in invoices", whas("access", "`invoices`", ("critical",)))
+          check("Access test listed /settings as not covered",
+                "/settings" in w["inventory"]["Routes in the code that no access test covers"])
+          check("ZAP flagged missing security headers", whas("zap", "", ("medium", "high")))
+          check("Nuclei found the exposed .git/config", whas("nuclei", "git-config"))
+          check("testssl.sh flagged the self-signed certificate", whas("testssl", "", ("critical", "high")))
+          check("Weekly leaky scan job finished (block-on none)", os.environ["WEEKLY_LEAKY_RESULT"] == "success")
+          for t, s in k["tools"].items():
+              ok_or_skipped = s.startswith("ok") or (t in ("testssl", "supabase", "subfinder") and s.startswith("skipped"))
+              check(f"{t} on the locked-down app: {s}", ok_or_skipped)
+          bad = [f["title"] for f in k["findings"] if f["tool"] in ("access", "nuclei") or f["severity"] in ("critical", "high")]
+          check(f"Locked-down app: no access, Nuclei or high findings ({bad})", not bad)
+          print("Lower-level notes on the locked-down app:", [f["title"] for f in k["findings"]])
+          check("Locked-down weekly scan passed", os.environ["WEEKLY_CLEAN_RESULT"] == "success")
+          check("Weekly scan refused the production address", os.environ["REFUSED_RESULT"] == "failure")
+          r = json.load(open("selftest-weekly-refused/findings.json"))
+          check(f"No scanner touched the refused address ({r['tools']})", all(s == "did not run" for s in r["tools"].values()))
           sys.exit(0 if all(checks) else 1)
           PY

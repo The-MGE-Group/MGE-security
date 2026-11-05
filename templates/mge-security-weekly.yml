@@ -1,0 +1,19 @@
+# Copy to .github/workflows/mge-security-weekly.yml in a project: the weekly scan of a TEST deployment.
+# Replace the three values marked CHANGE.
+name: MGE Security weekly
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays 03:17 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  weekly:
+    uses: The-MGE-Group/MGE-security/.github/workflows/weekly-scan.yml@main
+    secrets: inherit
+    with:
+      target-url: https://CHANGE-test-deployment.vercel.app      # CHANGE: a preview or staging address
+      production-hosts: CHANGE.example.com, www.CHANGE.example.com  # CHANGE: every production host name
+      supabase-project-ref: ""   # CHANGE: the TEST Supabase project's ref, or leave empty to skip
+      root-domain: ""            # optional: your domain, for the public subdomain list

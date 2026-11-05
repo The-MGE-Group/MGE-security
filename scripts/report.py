@@ -36,12 +36,25 @@ BLOCK_LEVELS = {
 # Licenses that can force you to publish your own source code.
 STRONG_COPYLEFT = re.compile(r"\b(AGPL|GPL|SSPL|EUPL|OSL|CPAL|RPL|BUSL|Commons-Clause|CC-BY-NC|CC-BY-SA)", re.I)
 
+KIND = os.environ.get("SCAN_KIND", "pr")
+TARGET = os.environ.get("TARGET_URL", "")
 TOOLS = {
-    "gitleaks": "Gitleaks (passwords and keys in code and git history)",
-    "trufflehog": "TruffleHog (keys that are confirmed live)",
-    "osv": "OSV-Scanner (known-vulnerable or malicious packages, and licenses)",
-    "opengrep": "Opengrep (risky code patterns)",
-}
+    "pr": {
+        "gitleaks": "Gitleaks (passwords and keys in code and git history)",
+        "trufflehog": "TruffleHog (keys that are confirmed live)",
+        "osv": "OSV-Scanner (known-vulnerable or malicious packages, and licenses)",
+        "sbom": "Package list (SBOM, CycloneDX format, attached to this run)",
+        "opengrep": "Opengrep (risky code patterns, community rules plus MGE rules)",
+    },
+    "weekly": {
+        "access": "Access tests (cross-tenant and role checks, app routes and database)",
+        "zap": "ZAP (scans the running site from outside)",
+        "nuclei": "Nuclei (known flaws and exposed files on the running site)",
+        "testssl": "testssl.sh (HTTPS certificate and encryption settings)",
+        "supabase": "Supabase security advisor (database security settings)",
+        "subfinder": "Subfinder (public list of your subdomains, information only)",
+    },
+}[KIND]
 
 
 def load(name, lines=False):
@@ -52,6 +65,14 @@ def load(name, lines=False):
     if lines:  # TruffleHog prints one JSON object per line.
         return [json.loads(x) for x in text.splitlines() if x.strip().startswith("{")]
     return json.loads(text)
+
+
+def is_ok(s):
+    return s.startswith("ok")
+
+
+def is_skipped(s):
+    return s.startswith("skipped")
 
 
 def status(tool):
@@ -218,32 +239,113 @@ for r in og.get("results", []) if isinstance(og, dict) else []:
         "comment on that line with a short reason.",
         f"{rule}|{path}|{line}")
 
+
+# ---------- Access tests (written by access_test.py, already in finding form) ----------
+access = load("access.json") or {}
+for f in access.get("findings", []):
+    add("access", f["kind"], f["severity"], f["title"], f["where"], f["proof"], f["fix"], f["key"])
+inventory = {"Routes in the code that no access test covers": access.get("uncovered_routes", [])}
+
+# ---------- ZAP ----------
+zap = load("zap.json") or {}
+RISK = {"3": "high", "2": "medium", "1": "low"}
+for site in zap.get("site", []) if isinstance(zap, dict) else []:
+    for a in site.get("alerts", []):
+        sev = RISK.get(str(a.get("riskcode")))
+        if not sev or str(a.get("confidence")) == "0":  # informational or marked false positive
+            continue
+        inst = a.get("instances", [])
+        shown = "; ".join(f"`{i.get('method', 'GET')} {i.get('uri')}`" + (f" ({i['param']})" if i.get("param") else "")
+                          for i in inst[:5])
+        evidence = next((i.get("evidence") for i in inst if i.get("evidence")), "")
+        add("zap", "running-site", sev, f"{a.get('alert') or a.get('name')} (seen on {len(inst)} address(es))",
+            shown or site.get("@name", TARGET),
+            f"ZAP rule {a.get('pluginid')} flagged these requests: {shown}."
+            + (f" Evidence: `{evidence[:200]}`." if evidence else "")
+            + " " + re.sub(r"<[^>]+>", "", a.get("desc", ""))[:400],
+            re.sub(r"<[^>]+>", "", a.get("solution", "")).strip()[:600] or "See the ZAP rule description.",
+            f"{a.get('pluginid')}|{a.get('alert')}")
+
+# ---------- Nuclei ----------
+NSEV = {"critical": "critical", "high": "high", "medium": "medium", "low": "low"}
+for r in load("nuclei.jsonl", lines=True) or []:
+    info = r.get("info", {})
+    sev = NSEV.get(str(info.get("severity", "")).lower())
+    if not sev:
+        continue
+    where = r.get("matched-at") or r.get("host", "")
+    # Never copy the curl command or extracted values: they can contain the bypass secret or leaked data.
+    add("nuclei", "running-site", sev, f"{info.get('name', r.get('template-id'))}",
+        f"`{where}`",
+        f"Nuclei template `{r.get('template-id')}` matched at `{where}`. "
+        + (info.get("description") or "").strip()[:400],
+        (info.get("remediation") or "Check the address above and remove or protect what it exposes.").strip()[:600],
+        f"{r.get('template-id')}|{where}")
+
+# ---------- testssl.sh ----------
+TSEV = {"CRITICAL": "critical", "HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
+ts = load("testssl.json") or []
+for r in ts if isinstance(ts, list) else ts.get("scanResult", []):
+    sev = TSEV.get(str(r.get("severity", "")).upper())
+    if not sev:
+        continue
+    host = f"{r.get('ip', '')}:{r.get('port', '')}".strip(":")
+    add("testssl", "tls", sev, f"HTTPS setting: {r.get('id')}", f"`{host}`",
+        f"testssl.sh check `{r.get('id')}` on `{host}` reported: {r.get('finding')}",
+        "If the site is hosted on Vercel, Vercel controls these settings; check it is a real problem on your "
+        "own domain before acting. Otherwise fix the server's HTTPS configuration.",
+        f"{r.get('id')}|{host}")
+
+# ---------- Supabase security advisor ----------
+LEVEL = {"ERROR": "high", "WARN": "medium", "INFO": "low"}
+for l in (load("supabase.json") or {}).get("lints", []):
+    sev = LEVEL.get(str(l.get("level", "")).upper(), "unknown")
+    meta = l.get("metadata") or {}
+    obj = ".".join(x for x in (meta.get("schema"), meta.get("name")) if x)
+    add("supabase", "database", sev, f"Supabase advisor: {l.get('title') or l.get('name')}" + (f" on `{obj}`" if obj else ""),
+        f"Supabase project, object `{obj or 'project'}`",
+        f"Supabase lint `{l.get('name')}`: {l.get('detail') or l.get('description', '')}",
+        f"{l.get('description', '').strip()} How to fix: {l.get('remediation', '')}".strip(),
+        l.get("cache_key") or f"{l.get('name')}|{obj}")
+
+# ---------- Subfinder (information only, never a finding) ----------
+subs = sorted({r.get("host") for r in load("subfinder.jsonl", lines=True) or [] if r.get("host")})
+inventory["Subdomains listed in public sources (not scanned)"] = subs
+
 # ---------- Write the report ----------
 findings.sort(key=lambda f: (ORDER.index(f["severity"]), f["tool"], f["title"]))
 counts = {s: sum(f["severity"] == s for f in findings) for s in ORDER}
 for f in findings:
     f["blocks"] = f["severity"] in BLOCK_LEVELS
 blocking = [f for f in findings if f["blocks"]]
-failed = {t: status(t) for t in TOOLS if not status(t).startswith("ok")}
+failed = {t: status(t) for t in TOOLS if not is_ok(status(t)) and not is_skipped(status(t))}
+skipped = [t for t in TOOLS if is_skipped(status(t))]
+gate = "merging" if KIND == "pr" else "this scan passes"
 
 if failed:
     verdict = "**Could not finish.** One or more checks did not run, so this project has NOT been checked. See below."
 elif blocking:
-    verdict = f"**Blocked.** {len(blocking)} problem(s) at or above the \"{BLOCK_ON}\" level must be fixed before merging."
+    verdict = f"**Blocked.** {len(blocking)} problem(s) at or above the \"{BLOCK_ON}\" level must be fixed before {gate}."
 elif findings:
     verdict = f"**Passed with notes.** No problem at or above the \"{BLOCK_ON}\" level. {len(findings)} lower-level note(s) below."
 else:
-    verdict = "**Passed.** None of the checks below found a problem."
+    verdict = "**Passed.** None of the checks that ran found a problem."
+if skipped and not failed:
+    verdict += f" {len(skipped)} check(s) were skipped; see below."
 
-md = ["# MGE Security: pull-request scan", "", verdict, "",
-      f"Scanned: `{SCAN_PATH}` at commit `{SHA[:12]}`. Merge is blocked at: {BLOCK_ON}.", "",
+title = "pull-request scan" if KIND == "pr" else "weekly scan of a test deployment"
+scope = (f"Scanned: `{SCAN_PATH}` at commit `{SHA[:12]}`." if KIND == "pr"
+         else f"Scanned: `{TARGET}` (a test deployment, never production).")
+md = [f"# MGE Security: {title}", "", verdict, "",
+      f"{scope} Blocks at: {BLOCK_ON}.", "",
       "| Level | Count |", "|---|---|"] + [f"| {s} | {counts[s]} |" for s in ORDER] + [""]
 
-md += ["## Checks that ran", ""]
+md += ["## Checks", ""]
 for t, label in TOOLS.items():
     s = status(t)
-    good = s.startswith("ok")
-    md.append(f"- {'✅' if good else '❌'} {label}" + ("" if s == "ok" else f": **{s}**" if not good else f" ({s[2:].strip(' ()')})"))
+    icon = "✅" if is_ok(s) else "⏭️" if is_skipped(s) else "❌"
+    extra = "" if s == "ok" else f" ({s[2:].strip(' ()')})" if is_ok(s) else f": **{s}**"
+    md.append(f"- {icon} {label}{extra}")
 md.append("")
 
 if findings:
@@ -256,20 +358,36 @@ if findings:
     if len(findings) > 100:
         md += [f"_{len(findings) - 100} more in the `findings.json` file attached to this run._", ""]
 
-md += ["## What this scan does NOT check", "",
-       "- Whether the running app is safe (logins, permissions, one customer seeing another customer's data). "
-       "That needs tests against a running test copy, planned for a later step.",
-       "- Logic mistakes and new kinds of attack. The code rules only know common, well-known patterns.",
-       "- Vulnerabilities nobody has published yet, and malicious packages not yet reported.",
-       "- Packages not pinned in a lockfile (for example a `package.json` without `pnpm-lock.yaml`).",
-       "- Secrets that don't match a known format. TruffleHog only reports keys it could prove are live.",
-       "- License results are a warning, not legal advice. They come from deps.dev and can be wrong.",
+for heading, items in inventory.items():
+    if items:
+        md += [f"## {heading}", ""] + [f"- `{i}`" for i in items[:200]] + [""]
+
+NOT_CHECKED = {
+    "pr": [
+        "- Whether the running app is safe (logins, permissions, one customer seeing another customer's data). "
+        "The weekly scan covers that against a test deployment.",
+        "- Logic mistakes and new kinds of attack. The code rules only know common, well-known patterns.",
+        "- Vulnerabilities nobody has published yet, and malicious packages not yet reported.",
+        "- Packages not pinned in a lockfile (for example a `package.json` without `pnpm-lock.yaml`).",
+        "- Secrets that don't match a known format. TruffleHog only reports keys it could prove are live.",
+        "- License results are a warning, not legal advice. They come from deps.dev and can be wrong.",
+    ],
+    "weekly": [
+        "- Production. Only the test deployment above was scanned.",
+        "- Routes and tables the access tests don't list. They only prove what they test; see any "
+        "\"not covered\" list above.",
+        "- Pages behind a login, for ZAP and Nuclei. They scan as a logged-out visitor.",
+        "- Business rules nobody wrote down, and new kinds of attack.",
+        "- HTTPS on your own domain, if the test deployment uses a Vercel address: then testssl.sh is testing Vercel's settings.",
+    ],
+}[KIND]
+md += ["## What this scan does NOT check", ""] + NOT_CHECKED + [
        "", "A pass means these tools found nothing. It does not mean the software is secure.", ""]
 
 OUT.mkdir(parents=True, exist_ok=True)
 (OUT / "report.md").write_text("\n".join(md))
 (OUT / "findings.json").write_text(json.dumps(
-    {"block_on": BLOCK_ON, "counts": counts, "blocking": len(blocking),
-     "tools": {t: status(t) for t in TOOLS}, "findings": findings}, indent=2))
+    {"kind": KIND, "block_on": BLOCK_ON, "counts": counts, "blocking": len(blocking),
+     "tools": {t: status(t) for t in TOOLS}, "inventory": inventory, "findings": findings}, indent=2))
 print(f"blocking={len(blocking)}")
 print(f"failed={len(failed)}")

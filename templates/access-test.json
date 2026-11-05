@@ -1,0 +1,21 @@
+{
+  "supabase_url": "https://CHANGE-test-project.supabase.co",
+  "supabase_anon_key_secret": "MGE_TEST_SUPABASE_ANON_KEY",
+  "send_token_as": {"cookie": "sb-CHANGE-test-project-auth-token"},
+  "routes_dir": "app",
+  "tenant_column": "tenant_id",
+  "tenants": {
+    "A": {"id": "CHANGE-tenant-a-uuid", "marker": "CHANGE-text-that-only-exists-in-tenant-A-test-data"},
+    "B": {"id": "CHANGE-tenant-b-uuid", "marker": "CHANGE-text-that-only-exists-in-tenant-B-test-data"}
+  },
+  "users": {
+    "a_admin": {"tenant": "A", "role": "admin", "email_secret": "MGE_TEST_A_ADMIN_EMAIL", "password_secret": "MGE_TEST_A_ADMIN_PASSWORD"},
+    "a_member": {"tenant": "A", "role": "member", "email_secret": "MGE_TEST_A_MEMBER_EMAIL", "password_secret": "MGE_TEST_A_MEMBER_PASSWORD"},
+    "b_admin": {"tenant": "B", "role": "admin", "email_secret": "MGE_TEST_B_ADMIN_EMAIL", "password_secret": "MGE_TEST_B_ADMIN_PASSWORD"}
+  },
+  "checks": [
+    {"as": "a_admin", "method": "GET", "path": "/api/CHANGE/tenant-a-record-id", "expect": "allowed"},
+    {"as": "a_admin", "method": "GET", "path": "/api/CHANGE/tenant-b-record-id", "against": "B", "expect": "denied"},
+    {"as": null, "method": "GET", "path": "/api/CHANGE/tenant-a-record-id", "against": "A", "expect": "denied"}
+  ]
+}

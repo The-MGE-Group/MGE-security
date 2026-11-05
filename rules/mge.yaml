@@ -1,0 +1,43 @@
+# MGE Security's own Opengrep rules, for Next.js + Supabase projects.
+# Simple patterns only: each one is a clear mistake when it matches.
+rules:
+  - id: mge-next-public-secret
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      `$VAR` starts with NEXT_PUBLIC_, so Next.js copies its value into the code sent to every
+      visitor's browser, but its name says it is a secret. Rename it without NEXT_PUBLIC_, use it only
+      in server code, and rotate the key if this was ever deployed.
+    patterns:
+      - pattern: process.env.$VAR
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: ^NEXT_PUBLIC_\w*(SECRET|SERVICE_ROLE|PRIVATE|PASSWORD)
+
+  - id: mge-supabase-service-role-in-browser-code
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      This file starts with "use client", so it runs in the visitor's browser, but it reads the Supabase
+      service-role (secret) key. That key skips all row-level security: whoever has it can read and
+      change every tenant's data. Move this code to the server.
+    patterns:
+      - pattern-inside: |
+          "use client";
+          ...
+      - pattern-either:
+          - pattern: process.env.SUPABASE_SERVICE_ROLE_KEY
+          - pattern: process.env.SUPABASE_SECRET_KEY
+
+  - id: mge-supabase-getsession-on-server
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      `getSession()` reads the login from the cookie without checking it with Supabase, so on the server
+      it must not be trusted to decide who the user is. Use `getUser()` (or `getClaims()`) instead.
+      Supabase's own Next.js guide says the same.
+    patterns:
+      - pattern: $SUPA.auth.getSession()
+      - pattern-not-inside: |
+          "use client";
+          ...

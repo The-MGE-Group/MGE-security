@@ -1,0 +1,918 @@
+# MGE Security: weekly scan of a running TEST deployment (reusable workflow). Never production.
+# Every tool is pinned to an exact version and checked by SHA-256, commit hash or image digest.
+# Blocks marked BEGIN/END are copied in from scripts/ by scripts/build.py.
+name: MGE Security weekly scan
+
+on:
+  workflow_call:
+    inputs:
+      target-url:
+        description: "The test or preview deployment to scan, for example https://myapp-git-staging-team.vercel.app"
+        type: string
+        required: true
+      production-hosts:
+        description: "Comma-separated production host names. The scan refuses to run if target-url uses one of them"
+        type: string
+        required: true
+      block-on:
+        description: "Lowest level that fails the scan: critical, high, medium, or none"
+        type: string
+        default: high
+      access-config:
+        description: "Access-test config file in the project (skipped if missing)"
+        type: string
+        default: .mge-security/access-test.json
+      zap-mode:
+        description: "baseline (looks only, safe) or full (also sends attacks; test data may change)"
+        type: string
+        default: baseline
+      nuclei-templates:
+        description: "Nuclei template folders or files to run, comma-separated, relative to the template set"
+        type: string
+        default: http,ssl,dns
+      tls-target:
+        description: "host:port for the HTTPS check. Empty means the target-url host, if it uses https"
+        type: string
+        default: ""
+      root-domain:
+        description: "Your domain, for the public subdomain list (read from public sources only). Empty skips it"
+        type: string
+        default: ""
+      supabase-project-ref:
+        description: "Supabase project ref for the security advisor. Empty skips it"
+        type: string
+        default: ""
+      setup-command:
+        description: "Optional command run before scanning, for example to start the app locally"
+        type: string
+        default: ""
+      create-issues:
+        description: "Open a GitHub issue per blocking finding and close it once fixed"
+        type: boolean
+        default: true
+      artifact-name:
+        type: string
+        default: mge-security-weekly-report
+    outputs:
+      blocking:
+        value: ${{ jobs.scan.outputs.blocking }}
+
+jobs:
+  scan:
+    name: Weekly scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      blocking: ${{ steps.report.outputs.blocking }}
+    env:
+      TARGET_URL: ${{ inputs.target-url }}
+      RAW_DIR: /tmp/mge-raw
+      OUT_DIR: /tmp/mge-out
+      BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+    steps:
+      - name: Refuse to scan production
+        id: guard
+        env:
+          PROD: ${{ inputs.production-hosts }}
+        run: |
+          set -euo pipefail
+          host=$(python3 -c 'import sys,urllib.parse;print((urllib.parse.urlparse(sys.argv[1]).hostname or "").lower())' "$TARGET_URL")
+          [ -n "$host" ] || { echo "::error::target-url is not a valid address"; exit 1; }
+          [ -n "${PROD// /}" ] || { echo "::error::production-hosts must list your production host names"; exit 1; }
+          IFS=',' read -ra hosts <<< "$PROD"
+          for p in "${hosts[@]}"; do
+            p=$(echo "$p" | tr -d ' ' | tr 'A-Z' 'a-z')
+            if [ -n "$p" ] && [ "$host" = "$p" ]; then
+              echo "::error::Refusing to scan $host: it is listed as production."; exit 1
+            fi
+          done
+          echo "Target $host is not on the production list. Continuing."
+          mkdir -p "$RAW_DIR/status" "$OUT_DIR" && chmod 777 "$RAW_DIR"
+
+      - name: Get the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install scanners (exact versions, checksums verified)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin" && cd "$RUNNER_TEMP"
+          get() { curl -fsSL --retry 3 -o "$3" "$1" && echo "$2  $3" | sha256sum -c - ; }
+          G=https://github.com
+          get $G/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip \
+            ea63d4ae232808cd7c6bc00d0142428e231fab59dae01042246097d195835ab6 nuclei.zip
+          get $G/projectdiscovery/subfinder/releases/download/v2.17.0/subfinder_2.17.0_linux_amd64.zip \
+            a39c3e5c7a26ef3c430915c4d6cbf7716a00f26769a75e9405aba796142eba37 subfinder.zip
+          unzip -q -o nuclei.zip nuclei -d bin && unzip -q -o subfinder.zip subfinder -d bin
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          fetch() { git init -q "$1" && git -C "$1" fetch -q --depth 1 "$2" "$3" && git -C "$1" checkout -q FETCH_HEAD; }
+          fetch nuclei-templates https://github.com/projectdiscovery/nuclei-templates f8b8b8dcd70d93826c3767e1829ef8243af9f03b # v10.5.0
+          fetch testssl https://github.com/testssl/testssl.sh 97763a411c525720a5f9bd9d2cded416b10f210a # v3.2.4
+          docker pull -q ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af # 2.17.0
+
+      - name: Start the app (setup-command)
+        if: inputs.setup-command != ''
+        env:
+          SETUP: ${{ inputs.setup-command }}
+        run: bash -c "$SETUP"
+
+      - name: Wait until the target answers
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "x-vercel-protection-bypass: $BYPASS_SECRET" "$TARGET_URL" || true)
+            [ "$code" != "000" ] && { echo "Target answered with HTTP $code"; exit 0; }
+            sleep 5
+          done
+          echo "::error::The target did not answer within 150 seconds."; exit 1
+
+      - name: Access tests (cross-tenant and roles)
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          ACCESS_CONFIG: ${{ inputs.access-config }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          # >>> BEGIN scripts/access_test.py (copied in by scripts/build.py)
+          cat > "$RUNNER_TEMP/access_test.py" <<'MGE_EOF'
+          #!/usr/bin/env python3
+          """Cross-tenant and role access tests against a running TEST deployment.
+
+          Reads the project's config (default .mge-security/access-test.json), logs in as each test
+          user, and checks two things:
+            1. App routes: every listed request must be refused (or allowed) as the config says.
+            2. Database: with each user's login, Supabase must return no rows that belong to another
+               tenant, for every table that has a tenant column. Logged-out visitors must get none.
+
+          Proof is the exact request. Tokens and passwords are never written out.
+          A check that should be ALLOWED and isn't means the test itself is broken (for example a failed
+          login), so the whole run is marked as not finished instead of passed.
+
+          Writes $RAW_DIR/access.json and $RAW_DIR/status/access.
+          """
+          import base64
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          RAW = Path(os.environ["RAW_DIR"])
+          TARGET = os.environ["TARGET_URL"].rstrip("/")
+          CONFIG = Path(os.environ.get("ACCESS_CONFIG", ".mge-security/access-test.json"))
+          SECRETS = json.loads(os.environ.get("ALL_SECRETS") or "{}")
+          BYPASS = os.environ.get("BYPASS_SECRET", "")
+          (RAW / "status").mkdir(parents=True, exist_ok=True)
+
+
+          def done(status, findings=(), uncovered=()):
+              (RAW / "access.json").write_text(json.dumps({"findings": list(findings), "uncovered_routes": list(uncovered)}, indent=2))
+              (RAW / "status" / "access").write_text(status)
+              print(status)
+              sys.exit(0)
+
+
+          if not CONFIG.exists():
+              done(f"skipped (no {CONFIG} in the project, so no access tests are defined)")
+
+          cfg = json.loads(CONFIG.read_text())
+
+
+          def secret(name):
+              value = SECRETS.get(name) or os.environ.get(name)
+              if not value:
+                  done(f"failed: the secret {name} named in {CONFIG} is not set in this repository")
+              return value
+
+
+          def request(method, url, headers=None, body=None):
+              h = dict(headers or {})
+              if BYPASS and url.startswith(TARGET):
+                  h["x-vercel-protection-bypass"] = BYPASS
+              data = json.dumps(body).encode() if body is not None else None
+              if data:
+                  h["Content-Type"] = "application/json"
+              req = urllib.request.Request(url, data=data, method=method, headers=h)
+
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, *a, **k):
+                      return None
+
+              opener = urllib.request.build_opener(NoRedirect)
+              try:
+                  with opener.open(req, timeout=30) as r:
+                      return r.status, r.read(2_000_000).decode(errors="replace")
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read(2_000_000).decode(errors="replace")
+              except Exception as e:  # network problem: the test cannot judge this request
+                  return None, str(e)
+
+
+          # ---------- Log in every test user (Supabase email + password) ----------
+          supa = cfg.get("supabase_url", "").rstrip("/")
+          anon_key = secret(cfg["supabase_anon_key_secret"]) if cfg.get("supabase_anon_key_secret") else ""
+          sessions, users = {}, cfg.get("users", {})
+          for label, u in users.items():
+              code, body = request("POST", f"{supa}/auth/v1/token?grant_type=password",
+                                   {"apikey": anon_key},
+                                   {"email": secret(u["email_secret"]), "password": secret(u["password_secret"])})
+              if code != 200:
+                  done(f"failed: could not log in test user '{label}' (HTTP {code})")
+              sessions[label] = json.loads(body)
+
+
+          def auth_headers(label):
+              """How the app expects the login: a bearer header, or the cookie @supabase/ssr sets."""
+              if label is None:
+                  return {}
+              sess = sessions[label]
+              send = cfg.get("send_token_as", "bearer")
+              if send == "bearer":
+                  return {"Authorization": f"Bearer {sess['access_token']}"}
+              name = send["cookie"]
+              value = "base64-" + base64.urlsafe_b64encode(json.dumps(sess).encode()).decode().rstrip("=")
+              chunks = [value[i:i + 3180] for i in range(0, len(value), 3180)]
+              cookie = (f"{name}={chunks[0]}" if len(chunks) == 1
+                        else "; ".join(f"{name}.{i}={c}" for i, c in enumerate(chunks)))
+              return {"Cookie": cookie}
+
+
+          def who(label):
+              if label is None:
+                  return "a logged-out visitor"
+              u = users[label]
+              return f"test user `{label}` (tenant {u.get('tenant', '?')}, role {u.get('role', '?')})"
+
+
+          findings, broken = [], []
+          tenants = cfg.get("tenants", {})
+
+          # ---------- 1. App routes ----------
+          for c in cfg.get("checks", []):
+              label, method, path = c.get("as"), c.get("method", "GET").upper(), c["path"]
+              against = c.get("against")
+              marker = (tenants.get(against) or {}).get("marker") if against else None
+              code, body = request(method, TARGET + path, auth_headers(label), c.get("body"))
+              allowed = code is not None and 200 <= code < 300
+              denied = code is not None and 300 <= code < 500  # any refusal or redirect (for example to the login page)
+              req = f"`{method} {path}` as {who(label)}"
+              if c.get("expect") == "allowed":
+                  if not allowed:
+                      broken.append(f"{req} should work but got HTTP {code}")
+                  continue
+              if code is None or code >= 500:
+                  findings.append({"kind": "access", "severity": "medium", "key": f"route|{label}|{method}|{path}|error",
+                                   "title": f"Server error on a request that should be refused: {method} {path}",
+                                   "where": f"`{TARGET}{path}`",
+                                   "proof": f"Sent {req}; got {'no answer' if code is None else f'HTTP {code}'} instead of a refusal.",
+                                   "fix": "Make this route refuse the request cleanly (401, 403 or 404). A crash can hide a "
+                                          "missing check and can't be judged by this test."})
+                  continue
+              same_tenant = against is None or bool(label and users[label].get("tenant") == against)
+              # For cross-tenant reads, a marker proves the other tenant's data came back (an empty 200 is not a leak).
+              # For role checks inside one tenant, any success is the problem.
+              leaked = allowed and (same_tenant or marker is None or marker in body)
+              if leaked:
+                  sev = "high" if same_tenant else "critical"
+                  what = (f"tenant {against}'s data" if not same_tenant else "an action this role should not be allowed")
+                  findings.append({"kind": "access", "severity": sev, "key": f"route|{label}|{method}|{path}",
+                                   "title": f"{'Cross-tenant access' if not same_tenant else 'Role check missing'}: "
+                                            f"{who(label).split(' (')[0]} got {what} via {method} {path}",
+                                   "where": f"`{TARGET}{path}`",
+                                   "proof": f"Sent {req}; got HTTP {code}"
+                                            + (f" and the response contains tenant {against}'s marker text `{marker}`." if marker else ".")
+                                            + " Expected a refusal or a redirect to the login page. To reproduce: log in as that user on the "
+                                              f"test deployment and repeat the same request.",
+                                   "fix": "Check in this route's code that the logged-in user belongs to the tenant (and has the "
+                                          "role) for the record before reading or changing it. Also check the Supabase row-level "
+                                          "security policy for the table behind it."})
+              elif not denied and not allowed:
+                  broken.append(f"{req} gave HTTP {code}, which is neither allowed nor refused")
+
+          # ---------- 2. Database (Supabase REST API, row-level security) ----------
+          col = cfg.get("tenant_column", "tenant_id")
+          tables = list(cfg.get("tables", []))
+          if cfg.get("database_check", True) and supa:
+              if not tables:
+                  code, body = request("GET", f"{supa}/rest/v1/", {"apikey": anon_key})
+                  try:
+                      defs = json.loads(body).get("definitions", {}) if code == 200 else {}
+                      tables = sorted(t for t, d in defs.items() if col in (d.get("properties") or {}))
+                  except json.JSONDecodeError:
+                      tables = []
+                  if not tables:
+                      broken.append(f"could not list database tables automatically (HTTP {code}); add a \"tables\" list to {CONFIG}")
+              readers = [None] + list(users)
+              for table in tables:
+                  for label in readers:
+                      mine = users[label].get("tenant") if label else None
+                      others = [t for t in tenants if t != mine]
+                      for other in others:
+                          tid = tenants[other]["id"]
+                          q = urllib.parse.urlencode({"select": col, col: f"eq.{tid}", "limit": "1"})
+                          h = {"apikey": anon_key}
+                          if label:
+                              h["Authorization"] = f"Bearer {sessions[label]['access_token']}"
+                          code, body = request("GET", f"{supa}/rest/v1/{table}?{q}", h)
+                          try:
+                              rows = json.loads(body) if code == 200 else []
+                          except json.JSONDecodeError:
+                              rows = []
+                          if isinstance(rows, list) and rows:
+                              findings.append({
+                                  "kind": "access", "severity": "critical", "key": f"db|{table}|{label}|{other}",
+                                  "title": f"Database leak: {who(label).split(' (')[0]} can read tenant {other}'s rows in `{table}`",
+                                  "where": f"Supabase table `{table}`",
+                                  "proof": f"As {who(label)}, `GET /rest/v1/{table}?{q}` returned rows belonging to tenant {other}.",
+                                  "fix": f"Turn on row-level security for `{table}` and add a policy that only returns rows whose "
+                                         f"`{col}` matches the user's own tenant."})
+                          elif code not in (200, 401, 403, 404):
+                              broken.append(f"database check on `{table}` as {who(label)} got HTTP {code}")
+
+          # ---------- Which Next.js routes have no test ----------
+          uncovered = []
+          routes_dir = cfg.get("routes_dir")
+          if routes_dir and Path(routes_dir).is_dir():
+              tested = [c["path"].split("?")[0] for c in cfg.get("checks", [])]
+              for f in sorted(Path(routes_dir).rglob("*")):
+                  if not re.fullmatch(r"(page|route)\.(t|j)sx?", f.name):
+                      continue
+                  parts = [p for p in f.parent.relative_to(routes_dir).parts
+                           if not (p.startswith("(") and p.endswith(")")) and not p.startswith("@")]
+                  if any(p.startswith("_") for p in parts):
+                      continue
+                  template = "/" + "/".join(parts)
+                  rx = "/" + "/".join(".*" if p.startswith("[[...") else ".+" if p.startswith("[...")
+                                      else "[^/]+" if p.startswith("[") else re.escape(p) for p in parts)
+                  if not any(re.fullmatch(rx.rstrip("/") or "/", t.rstrip("/") or "/") for t in tested):
+                      uncovered.append(template)
+
+          if broken:
+              done("failed: the test itself did not work, so nothing is proven: " + "; ".join(broken[:5]), findings, uncovered)
+          done("ok", findings, uncovered)
+          MGE_EOF
+          # <<< END scripts/access_test.py
+          python3 "$RUNNER_TEMP/access_test.py" || echo "failed: the access test crashed, see the step log" > "$RAW_DIR/status/access"
+
+      - name: Outside scan (ZAP)
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          MODE: ${{ inputs.zap-mode }}
+        run: |
+          set +e
+          case "$MODE" in baseline) script=zap-baseline.py ;; full) script=zap-full-scan.py ;;
+            *) echo "failed: zap-mode must be baseline or full" > "$RAW_DIR/status/zap"; exit 0 ;; esac
+          host=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlparse(sys.argv[1]).hostname)' "$TARGET_URL")
+          # The Vercel bypass header is only sent to the target host.
+          auth=(); [ -n "$BYPASS_SECRET" ] && auth=(-e ZAP_AUTH_HEADER=x-vercel-protection-bypass -e ZAP_AUTH_HEADER_VALUE="$BYPASS_SECRET" -e ZAP_AUTH_HEADER_SITE="$host")
+          docker run --rm --network host -v "$RAW_DIR:/zap/wrk:rw" "${auth[@]}" \
+            ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af \
+            "$script" -t "$TARGET_URL" -J zap.json -I -m 5
+          code=$?
+          echo "ZAP exit code $code"
+          # 0 = nothing found, 2 = warnings found (with -I those don't fail); anything else is a crash.
+          if [ -s "$RAW_DIR/zap.json" ] && [ $code -le 2 ]; then echo ok > "$RAW_DIR/status/zap"
+          else echo "failed (exit code $code), see the step log" > "$RAW_DIR/status/zap"; fi
+
+      - name: Known flaws and exposed files (Nuclei)
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          TEMPLATES: ${{ inputs.nuclei-templates }}
+        run: |
+          set +e
+          T="$RUNNER_TEMP/nuclei-templates"
+          args=(); IFS=',' read -ra parts <<< "$TEMPLATES"
+          for p in "${parts[@]}"; do args+=(-t "$T/$(echo "$p" | tr -d ' ')"); done
+          hdr=(); [ -n "$BYPASS_SECRET" ] && hdr=(-H "x-vercel-protection-bypass: $BYPASS_SECRET")
+          nuclei -u "$TARGET_URL" "${args[@]}" "${hdr[@]}" -severity low,medium,high,critical -etags dos,fuzz \
+            -eid generic-tokens,credentials-disclosure -ni -duc -silent -jsonl -o "$RAW_DIR/nuclei.jsonl"
+          code=$?
+          touch "$RAW_DIR/nuclei.jsonl"
+          [ $code -eq 0 ] && echo ok > "$RAW_DIR/status/nuclei" || echo "failed (exit code $code), see the step log" > "$RAW_DIR/status/nuclei"
+
+      - name: HTTPS settings (testssl.sh)
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          TLS_TARGET: ${{ inputs.tls-target }}
+        run: |
+          set +e
+          t="$TLS_TARGET"
+          if [ -z "$t" ]; then
+            t=$(python3 -c 'import sys,urllib.parse as u;x=u.urlparse(sys.argv[1]);print(f"{x.hostname}:{x.port or 443}" if x.scheme=="https" else "")' "$TARGET_URL")
+          fi
+          if [ -z "$t" ]; then echo "skipped (the target does not use https)" > "$RAW_DIR/status/testssl"; exit 0; fi
+          "$RUNNER_TEMP/testssl/testssl.sh" --quiet --warnings off --color 0 --severity LOW --jsonfile "$RAW_DIR/testssl.json" "$t"
+          code=$?
+          echo "testssl.sh exit code $code"
+          python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$RAW_DIR/testssl.json" \
+            && echo ok > "$RAW_DIR/status/testssl" || echo "failed (exit code $code), see the step log" > "$RAW_DIR/status/testssl"
+
+      - name: Supabase security advisor
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          REF: ${{ inputs.supabase-project-ref }}
+          TOKEN: ${{ secrets.SUPABASE_ADVISOR_TOKEN }}
+        run: |
+          if [ -z "$REF" ]; then echo "skipped (no supabase-project-ref given)" > "$RAW_DIR/status/supabase"; exit 0; fi
+          if [ -z "$TOKEN" ]; then echo "failed: the SUPABASE_ADVISOR_TOKEN secret is not set" > "$RAW_DIR/status/supabase"; exit 0; fi
+          code=$(curl -sS -o "$RAW_DIR/supabase.json" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+            "https://api.supabase.com/v1/projects/$REF/advisors/security")
+          [ "$code" = 200 ] && echo ok > "$RAW_DIR/status/supabase" || { rm -f "$RAW_DIR/supabase.json"; echo "failed (Supabase answered HTTP $code)" > "$RAW_DIR/status/supabase"; }
+
+      - name: Public subdomain list (Subfinder, information only)
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' }}
+        env:
+          DOMAIN: ${{ inputs.root-domain }}
+        run: |
+          if [ -z "$DOMAIN" ]; then echo "skipped (no root-domain given)" > "$RAW_DIR/status/subfinder"; exit 0; fi
+          # Passive: asks public sources only, sends nothing to your servers.
+          subfinder -d "$DOMAIN" -silent -oJ -o "$RAW_DIR/subfinder.jsonl" -duc \
+            && echo ok > "$RAW_DIR/status/subfinder" || echo "failed, see the step log" > "$RAW_DIR/status/subfinder"
+
+      - name: Write the plain-English report
+        id: report
+        if: always()
+        env:
+          BLOCK_ON: ${{ inputs.block-on }}
+          SCAN_KIND: weekly
+        run: |
+          # >>> BEGIN scripts/report.py (copied in by scripts/build.py)
+          cat > "$RUNNER_TEMP/report.py" <<'MGE_EOF'
+          #!/usr/bin/env python3
+          """Turn the raw scanner output into one plain-English report.
+
+          Reads:   $RAW_DIR/*.json      raw output from each scanner
+                   $RAW_DIR/status/*    "ok" or a failure message, one file per scanner
+          Writes:  $OUT_DIR/report.md     the human report (also used as the job summary)
+                   $OUT_DIR/findings.json machine-readable list (used by the self-test and issue creation)
+          Prints:  blocking=<n> and failed=<n> lines for $GITHUB_OUTPUT
+
+          Rule: a finding is only reported when the scanner gives proof (a file and line,
+          or a package name, version and lockfile). Secrets are never written out.
+          """
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          RAW = Path(os.environ["RAW_DIR"])
+          OUT = Path(os.environ["OUT_DIR"])
+          BLOCK_ON = os.environ.get("BLOCK_ON", "high").lower()
+          SCAN_PATH = os.environ.get("SCAN_PATH", ".")
+          SERVER = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+          REPO = os.environ.get("GITHUB_REPOSITORY", "")
+          SHA = os.environ.get("PROOF_SHA", os.environ.get("GITHUB_SHA", ""))
+
+          ORDER = ["critical", "high", "medium", "low", "unknown"]
+          BLOCK_LEVELS = {
+              "critical": {"critical"},
+              "high": {"critical", "high"},
+              "medium": {"critical", "high", "medium"},
+              "none": set(),
+          }[BLOCK_ON]
+
+          # Licenses that can force you to publish your own source code.
+          STRONG_COPYLEFT = re.compile(r"\b(AGPL|GPL|SSPL|EUPL|OSL|CPAL|RPL|BUSL|Commons-Clause|CC-BY-NC|CC-BY-SA)", re.I)
+
+          KIND = os.environ.get("SCAN_KIND", "pr")
+          TARGET = os.environ.get("TARGET_URL", "")
+          TOOLS = {
+              "pr": {
+                  "gitleaks": "Gitleaks (passwords and keys in code and git history)",
+                  "trufflehog": "TruffleHog (keys that are confirmed live)",
+                  "osv": "OSV-Scanner (known-vulnerable or malicious packages, and licenses)",
+                  "sbom": "Package list (SBOM, CycloneDX format, attached to this run)",
+                  "opengrep": "Opengrep (risky code patterns, community rules plus MGE rules)",
+              },
+              "weekly": {
+                  "access": "Access tests (cross-tenant and role checks, app routes and database)",
+                  "zap": "ZAP (scans the running site from outside)",
+                  "nuclei": "Nuclei (known flaws and exposed files on the running site)",
+                  "testssl": "testssl.sh (HTTPS certificate and encryption settings)",
+                  "supabase": "Supabase security advisor (database security settings)",
+                  "subfinder": "Subfinder (public list of your subdomains, information only)",
+              },
+          }[KIND]
+
+
+          def load(name, lines=False):
+              p = RAW / name
+              if not p.exists() or p.stat().st_size == 0:
+                  return None
+              text = p.read_text(errors="replace").strip()
+              if lines:  # TruffleHog prints one JSON object per line.
+                  return [json.loads(x) for x in text.splitlines() if x.strip().startswith("{")]
+              return json.loads(text)
+
+
+          def is_ok(s):
+              return s.startswith("ok")
+
+
+          def is_skipped(s):
+              return s.startswith("skipped")
+
+
+          def status(tool):
+              p = RAW / "status" / tool
+              return p.read_text().strip() if p.exists() else "did not run"
+
+
+          def link(path, line=None):
+              """Clickable link to the exact file and line in the scanned commit."""
+              if not REPO or not SHA:
+                  return f"`{path}`" + (f" line {line}" if line else "")
+              anchor = f"#L{line}" if line else ""
+              label = f"{path}" + (f" line {line}" if line else "")
+              return f"[{label}]({SERVER}/{REPO}/blob/{SHA}/{path}{anchor})"
+
+
+          def rel(path):
+              """Paths from the scanners, made relative to the repository root."""
+              p = str(path)
+              for prefix in (os.environ.get("GITHUB_WORKSPACE", "") + "/", "./"):
+                  if prefix != "/" and p.startswith(prefix):
+                      p = p[len(prefix):]
+              return p
+
+
+          def vkey(v):
+              """Rough version order: 4.17.19 > 4.17.5. Good enough to pick an upgrade target."""
+              return [int(x) if x.isdigit() else -1 for x in re.split(r"[.+-]", str(v))]
+
+
+          findings = []
+
+
+          def add(tool, kind, severity, title, where, proof, fix, key):
+              findings.append({
+                  "tool": tool, "kind": kind, "severity": severity, "title": title,
+                  "where": where, "proof": proof, "fix": fix,
+                  "id": hashlib.sha256(f"{tool}|{key}".encode()).hexdigest()[:16],
+              })
+
+
+          # ---------- Gitleaks ----------
+          seen = set()
+          for name in ("gitleaks-files.json", "gitleaks-history.json"):
+              for f in load(name) or []:
+                  path, line = rel(f.get("File", "")), f.get("StartLine")
+                  key = (f.get("RuleID"), path, line, f.get("Commit", ""))
+                  if (f.get("RuleID"), path, line) in seen:
+                      continue
+                  seen.add((f.get("RuleID"), path, line))
+                  commit = f.get("Commit")
+                  where = link(path, line) + (f", added in commit `{commit[:12]}`" if commit else "")
+                  add("gitleaks", "secret", "high",
+                      f"Possible secret in code: {f.get('Description') or f.get('RuleID')}",
+                      where,
+                      f"Gitleaks rule `{f.get('RuleID')}` matched at {path} line {line}. The value is hidden in this report.",
+                      "If it is a real key: revoke it at the provider first (deleting it from code is not enough, it stays in git history), "
+                      "then move it to an environment secret. If it is not a secret, add this line to a `.gitleaksignore` file "
+                      f"in the project: `{f.get('Fingerprint', '')}`",
+                      "|".join(map(str, key)))
+
+          # ---------- TruffleHog (verified only) ----------
+          for f in load("trufflehog.json", lines=True) or []:
+              data = (f.get("SourceMetadata") or {}).get("Data") or {}
+              meta = data.get("Filesystem") or data.get("Git") or {}
+              path, line, commit = rel(meta.get("file", "")), meta.get("line"), meta.get("commit")
+              detector = f.get("DetectorName", "unknown")
+              where = link(path, line) + (f", in commit `{commit[:12]}`" if commit else "")
+              add("trufflehog", "secret", "critical",
+                  f"LIVE {detector} key found (TruffleHog confirmed it works)",
+                  where,
+                  f"TruffleHog tested this {detector} credential against {detector} and it was accepted. The value is hidden in this report.",
+                  f"Revoke this {detector} key now at the provider, then check the provider's logs for use you don't recognise. "
+                  "Removing it from code does not make it safe; it is still in git history.",
+                  f"{detector}|{path}|{line}|{commit}")
+
+          # ---------- OSV-Scanner: vulnerabilities, malware, licenses ----------
+          osv = load("osv.json") or {}
+          for result in osv.get("results", []) if isinstance(osv, dict) else []:
+              lockfile = rel((result.get("source") or {}).get("path", ""))
+              for pkg in result.get("packages", []):
+                  p = pkg.get("package", {})
+                  name, version, eco = p.get("name"), p.get("version"), p.get("ecosystem")
+                  vulns = {v["id"]: v for v in pkg.get("vulnerabilities", [])}
+                  advisories = []  # one entry per group of duplicate advisories
+                  for g in pkg.get("groups", []):
+                      ids = g.get("ids", [])
+                      members = [vulns[i] for i in ids if i in vulns]
+                      all_ids = sorted(set(ids) | set(g.get("aliases", [])))
+                      malicious = any(i.startswith("MAL-") for i in all_ids) or any(
+                          "malicious" in (m.get("summary") or "").lower() for m in members)
+                      sev = "unknown"
+                      try:
+                          score = float(g.get("max_severity") or "")
+                          sev = "critical" if score >= 9 else "high" if score >= 7 else "medium" if score >= 4 else "low"
+                      except ValueError:
+                          words = [(m.get("database_specific") or {}).get("severity", "").lower() for m in members]
+                          words = ["medium" if w == "moderate" else w for w in words]
+                          sev = next((lvl for lvl in ORDER if lvl in words), "unknown")
+                      fixed = [ev["fixed"] for m in members for a in m.get("affected", [])
+                               if (a.get("package") or {}).get("name") == name
+                               for r in a.get("ranges", []) for ev in r.get("events", []) if "fixed" in ev]
+                      later = [f for f in fixed if vkey(f) > vkey(version)]
+                      advisories.append({
+                          "id": next((i for i in all_ids if i.startswith(("GHSA-", "MAL-"))), all_ids[0] if all_ids else "?"),
+                          "sev": sev, "malicious": malicious,
+                          "summary": next((m.get("summary") for m in members if m.get("summary")), ""),
+                          "fixed": min(later, key=vkey) if later else None})
+                  if not advisories:
+                      pass
+                  elif any(a["malicious"] for a in advisories):
+                      ids = sorted({a["id"] for a in advisories})
+                      add("osv", "malicious-package", "critical", f"Malicious package: {name}@{version}",
+                          link(lockfile),
+                          f"`{name}@{version}` ({eco}) is listed in {link(lockfile)} and is reported as malicious: "
+                          + ", ".join(f"[{i}](https://osv.dev/vulnerability/{i})" for i in ids) + ".",
+                          f"Remove `{name}` now. Treat any computer or server that installed it as compromised: "
+                          "rotate keys that were present there.",
+                          f"{lockfile}|{name}|{version}|malicious")
+                  else:
+                      advisories.sort(key=lambda a: ORDER.index(a["sev"]))
+                      sev = advisories[0]["sev"]
+                      lines = "; ".join(f"[{a['id']}](https://osv.dev/vulnerability/{a['id']}) ({a['sev']}) {a['summary']}".strip()
+                                        for a in advisories[:10])
+                      needs = [a["fixed"] for a in advisories]
+                      if all(needs):
+                          fix = f"Upgrade `{name}` to version {max(needs, key=vkey)} or later, which fixes all of these."
+                      else:
+                          fix = (f"At least one of these has no fixed version yet. Upgrade where possible, consider replacing "
+                                 f"`{name}`, or record why it is acceptable in `osv-scanner.toml`.")
+                      n = len(advisories)
+                      add("osv", "vulnerable-dependency", sev,
+                          f"{name}@{version} has {n} known vulnerabilit{'y' if n == 1 else 'ies'}"
+                          + (f": {advisories[0]['summary']}" if n == 1 and advisories[0]["summary"] else ""),
+                          link(lockfile),
+                          f"`{name}@{version}` ({eco}) is listed in {link(lockfile)} and matches: {lines}.",
+                          fix, f"{lockfile}|{name}|{version}|vulnerable")
+                  bad = pkg.get("license_violations") or []
+                  if bad:
+                      strong = any(STRONG_COPYLEFT.search(b) for b in bad)
+                      add("osv", "license", "high" if strong else "medium",
+                          f"License risk: {name}@{version} uses {', '.join(bad)}",
+                          link(lockfile),
+                          f"`{name}@{version}` in {link(lockfile)} is licensed {', '.join(bad)} according to deps.dev, "
+                          "which is not on the allowed list.",
+                          ("This license can require you to publish your own source code. Replace the package, or get "
+                           "legal advice before keeping it." if strong else
+                           "Check the license terms. If it is acceptable, add it to the `allowed-licenses` setting."),
+                          f"{lockfile}|{name}|{version}|license")
+
+          # ---------- Opengrep ----------
+          og = load("opengrep.json") or {}
+          SEV = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
+          for r in og.get("results", []) if isinstance(og, dict) else []:
+              path, line = rel(r.get("path", "")), (r.get("start") or {}).get("line")
+              extra = r.get("extra", {})
+              rule = r.get("check_id", "")
+              short = rule.split(".")[-1]
+              add("opengrep", "code", SEV.get(extra.get("severity", "").upper(), "unknown"),
+                  f"Risky code pattern: {short}",
+                  link(path, line),
+                  f"Rule `{short}` matched at {path} line {line}: {extra.get('message', '').strip()}",
+                  "Read the rule message above and change the code. If it is a false alarm, add a `// nosemgrep` "
+                  "comment on that line with a short reason.",
+                  f"{rule}|{path}|{line}")
+
+
+          # ---------- Access tests (written by access_test.py, already in finding form) ----------
+          access = load("access.json") or {}
+          for f in access.get("findings", []):
+              add("access", f["kind"], f["severity"], f["title"], f["where"], f["proof"], f["fix"], f["key"])
+          inventory = {"Routes in the code that no access test covers": access.get("uncovered_routes", [])}
+
+          # ---------- ZAP ----------
+          zap = load("zap.json") or {}
+          RISK = {"3": "high", "2": "medium", "1": "low"}
+          for site in zap.get("site", []) if isinstance(zap, dict) else []:
+              for a in site.get("alerts", []):
+                  sev = RISK.get(str(a.get("riskcode")))
+                  if not sev or str(a.get("confidence")) == "0":  # informational or marked false positive
+                      continue
+                  inst = a.get("instances", [])
+                  shown = "; ".join(f"`{i.get('method', 'GET')} {i.get('uri')}`" + (f" ({i['param']})" if i.get("param") else "")
+                                    for i in inst[:5])
+                  evidence = next((i.get("evidence") for i in inst if i.get("evidence")), "")
+                  add("zap", "running-site", sev, f"{a.get('alert') or a.get('name')} (seen on {len(inst)} address(es))",
+                      shown or site.get("@name", TARGET),
+                      f"ZAP rule {a.get('pluginid')} flagged these requests: {shown}."
+                      + (f" Evidence: `{evidence[:200]}`." if evidence else "")
+                      + " " + re.sub(r"<[^>]+>", "", a.get("desc", ""))[:400],
+                      re.sub(r"<[^>]+>", "", a.get("solution", "")).strip()[:600] or "See the ZAP rule description.",
+                      f"{a.get('pluginid')}|{a.get('alert')}")
+
+          # ---------- Nuclei ----------
+          NSEV = {"critical": "critical", "high": "high", "medium": "medium", "low": "low"}
+          for r in load("nuclei.jsonl", lines=True) or []:
+              info = r.get("info", {})
+              sev = NSEV.get(str(info.get("severity", "")).lower())
+              if not sev:
+                  continue
+              where = r.get("matched-at") or r.get("host", "")
+              # Never copy the curl command or extracted values: they can contain the bypass secret or leaked data.
+              add("nuclei", "running-site", sev, f"{info.get('name', r.get('template-id'))}",
+                  f"`{where}`",
+                  f"Nuclei template `{r.get('template-id')}` matched at `{where}`. "
+                  + (info.get("description") or "").strip()[:400],
+                  (info.get("remediation") or "Check the address above and remove or protect what it exposes.").strip()[:600],
+                  f"{r.get('template-id')}|{where}")
+
+          # ---------- testssl.sh ----------
+          TSEV = {"CRITICAL": "critical", "HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
+          ts = load("testssl.json") or []
+          for r in ts if isinstance(ts, list) else ts.get("scanResult", []):
+              sev = TSEV.get(str(r.get("severity", "")).upper())
+              if not sev:
+                  continue
+              host = f"{r.get('ip', '')}:{r.get('port', '')}".strip(":")
+              add("testssl", "tls", sev, f"HTTPS setting: {r.get('id')}", f"`{host}`",
+                  f"testssl.sh check `{r.get('id')}` on `{host}` reported: {r.get('finding')}",
+                  "If the site is hosted on Vercel, Vercel controls these settings; check it is a real problem on your "
+                  "own domain before acting. Otherwise fix the server's HTTPS configuration.",
+                  f"{r.get('id')}|{host}")
+
+          # ---------- Supabase security advisor ----------
+          LEVEL = {"ERROR": "high", "WARN": "medium", "INFO": "low"}
+          for l in (load("supabase.json") or {}).get("lints", []):
+              sev = LEVEL.get(str(l.get("level", "")).upper(), "unknown")
+              meta = l.get("metadata") or {}
+              obj = ".".join(x for x in (meta.get("schema"), meta.get("name")) if x)
+              add("supabase", "database", sev, f"Supabase advisor: {l.get('title') or l.get('name')}" + (f" on `{obj}`" if obj else ""),
+                  f"Supabase project, object `{obj or 'project'}`",
+                  f"Supabase lint `{l.get('name')}`: {l.get('detail') or l.get('description', '')}",
+                  f"{l.get('description', '').strip()} How to fix: {l.get('remediation', '')}".strip(),
+                  l.get("cache_key") or f"{l.get('name')}|{obj}")
+
+          # ---------- Subfinder (information only, never a finding) ----------
+          subs = sorted({r.get("host") for r in load("subfinder.jsonl", lines=True) or [] if r.get("host")})
+          inventory["Subdomains listed in public sources (not scanned)"] = subs
+
+          # ---------- Write the report ----------
+          findings.sort(key=lambda f: (ORDER.index(f["severity"]), f["tool"], f["title"]))
+          counts = {s: sum(f["severity"] == s for f in findings) for s in ORDER}
+          for f in findings:
+              f["blocks"] = f["severity"] in BLOCK_LEVELS
+          blocking = [f for f in findings if f["blocks"]]
+          failed = {t: status(t) for t in TOOLS if not is_ok(status(t)) and not is_skipped(status(t))}
+          skipped = [t for t in TOOLS if is_skipped(status(t))]
+          gate = "merging" if KIND == "pr" else "this scan passes"
+
+          if failed:
+              verdict = "**Could not finish.** One or more checks did not run, so this project has NOT been checked. See below."
+          elif blocking:
+              verdict = f"**Blocked.** {len(blocking)} problem(s) at or above the \"{BLOCK_ON}\" level must be fixed before {gate}."
+          elif findings:
+              verdict = f"**Passed with notes.** No problem at or above the \"{BLOCK_ON}\" level. {len(findings)} lower-level note(s) below."
+          else:
+              verdict = "**Passed.** None of the checks that ran found a problem."
+          if skipped and not failed:
+              verdict += f" {len(skipped)} check(s) were skipped; see below."
+
+          title = "pull-request scan" if KIND == "pr" else "weekly scan of a test deployment"
+          scope = (f"Scanned: `{SCAN_PATH}` at commit `{SHA[:12]}`." if KIND == "pr"
+                   else f"Scanned: `{TARGET}` (a test deployment, never production).")
+          md = [f"# MGE Security: {title}", "", verdict, "",
+                f"{scope} Blocks at: {BLOCK_ON}.", "",
+                "| Level | Count |", "|---|---|"] + [f"| {s} | {counts[s]} |" for s in ORDER] + [""]
+
+          md += ["## Checks", ""]
+          for t, label in TOOLS.items():
+              s = status(t)
+              icon = "✅" if is_ok(s) else "⏭️" if is_skipped(s) else "❌"
+              extra = "" if s == "ok" else f" ({s[2:].strip(' ()')})" if is_ok(s) else f": **{s}**"
+              md.append(f"- {icon} {label}{extra}")
+          md.append("")
+
+          if findings:
+              md += ["## What was found", ""]
+              for n, f in enumerate(findings[:100], 1):
+                  md += [f"### {n}. [{f['severity'].upper()}] {f['title']}", "",
+                         f"- **Where:** {f['where']}",
+                         f"- **Proof:** {f['proof']}",
+                         f"- **What to do:** {f['fix']}", ""]
+              if len(findings) > 100:
+                  md += [f"_{len(findings) - 100} more in the `findings.json` file attached to this run._", ""]
+
+          for heading, items in inventory.items():
+              if items:
+                  md += [f"## {heading}", ""] + [f"- `{i}`" for i in items[:200]] + [""]
+
+          NOT_CHECKED = {
+              "pr": [
+                  "- Whether the running app is safe (logins, permissions, one customer seeing another customer's data). "
+                  "The weekly scan covers that against a test deployment.",
+                  "- Logic mistakes and new kinds of attack. The code rules only know common, well-known patterns.",
+                  "- Vulnerabilities nobody has published yet, and malicious packages not yet reported.",
+                  "- Packages not pinned in a lockfile (for example a `package.json` without `pnpm-lock.yaml`).",
+                  "- Secrets that don't match a known format. TruffleHog only reports keys it could prove are live.",
+                  "- License results are a warning, not legal advice. They come from deps.dev and can be wrong.",
+              ],
+              "weekly": [
+                  "- Production. Only the test deployment above was scanned.",
+                  "- Routes and tables the access tests don't list. They only prove what they test; see any "
+                  "\"not covered\" list above.",
+                  "- Pages behind a login, for ZAP and Nuclei. They scan as a logged-out visitor.",
+                  "- Business rules nobody wrote down, and new kinds of attack.",
+                  "- HTTPS on your own domain, if the test deployment uses a Vercel address: then testssl.sh is testing Vercel's settings.",
+              ],
+          }[KIND]
+          md += ["## What this scan does NOT check", ""] + NOT_CHECKED + [
+                 "", "A pass means these tools found nothing. It does not mean the software is secure.", ""]
+
+          OUT.mkdir(parents=True, exist_ok=True)
+          (OUT / "report.md").write_text("\n".join(md))
+          (OUT / "findings.json").write_text(json.dumps(
+              {"kind": KIND, "block_on": BLOCK_ON, "counts": counts, "blocking": len(blocking),
+               "tools": {t: status(t) for t in TOOLS}, "inventory": inventory, "findings": findings}, indent=2))
+          print(f"blocking={len(blocking)}")
+          print(f"failed={len(failed)}")
+          MGE_EOF
+          # <<< END scripts/report.py
+          python3 "$RUNNER_TEMP/report.py" >> "$GITHUB_OUTPUT"
+          cat "$OUT_DIR/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: /tmp/mge-out/
+          if-no-files-found: error
+
+      - name: Open issues for new findings, close issues that are fixed
+        if: always() && inputs.create-issues && steps.report.outputs.failed == '0'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          FINDINGS: /tmp/mge-out/findings.json
+          SOURCE: weekly
+          CAN_CLOSE: "true"
+        with:
+          script: |
+            // >>> BEGIN scripts/issues.js (copied in by scripts/build.py)
+            // Opens one GitHub issue per blocking finding, and closes issues whose finding is gone.
+            // Runs inside actions/github-script. Env: FINDINGS (path), SOURCE (pr-scan or weekly), CAN_CLOSE ("true"/"false").
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const label = 'mge-security';
+            const source = process.env.SOURCE;
+            const run = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const data = JSON.parse(fs.readFileSync(process.env.FINDINGS, 'utf8'));
+            const marker = /<!-- mge-security-id: (\w+) source: ([\w-]+) tool: ([\w-]+) -->/;
+
+            try { await github.rest.issues.getLabel({ owner, repo, name: label }); }
+            catch { await github.rest.issues.createLabel({ owner, repo, name: label, color: 'b60205', description: 'Found by MGE Security' }); }
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, { owner, repo, labels: label, state: 'all', per_page: 100 });
+            const known = new Map();
+            for (const i of existing) {
+              const m = (i.body || '').match(marker);
+              if (m && m[2] === source) known.set(m[1], { issue: i, tool: m[3] });
+            }
+
+            // 1. New issues. A finding never gets a second issue, even if its first issue was closed by hand.
+            let made = 0;
+            for (const f of data.findings.filter(f => f.blocks && !known.has(f.id))) {
+              if (made >= 20) { core.warning('Stopped after 20 new issues; the rest are in the report.'); break; }
+              await github.rest.issues.create({ owner, repo, labels: [label],
+                title: `[${f.severity}] ${f.title}`.slice(0, 250),
+                body: [`**Where:** ${f.where}`, `**Proof:** ${f.proof}`, `**What to do:** ${f.fix}`,
+                       `Found by ${f.tool} in [this scan](${run}). This issue closes itself when a later full scan no longer finds it.`,
+                       `<!-- mge-security-id: ${f.id} source: ${source} tool: ${f.tool} -->`].join('\n\n') });
+              made++;
+            }
+
+            // 2. Retest: close open issues this scan no longer finds. Only when the tool that found it ran cleanly,
+            //    so a crashed or skipped tool can never close an issue.
+            let closed = 0;
+            if (process.env.CAN_CLOSE === 'true') {
+              const current = new Set(data.findings.map(f => f.id));
+              for (const [id, { issue, tool }] of known) {
+                if (issue.state !== 'open' || current.has(id) || data.tools[tool] !== 'ok') continue;
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                  body: `Retested in [this scan](${run}): no longer found. Closing.\n\n---\n_Generated by MGE Security_` });
+                await github.rest.issues.update({ owner, repo, issue_number: issue.number, state: 'closed', state_reason: 'completed' });
+                closed++;
+              }
+            }
+            core.info(`Opened ${made} new issue(s), closed ${closed} fixed issue(s).`);
+            // <<< END scripts/issues.js
+
+      - name: Pass or block
+        if: always()
+        env:
+          BLOCKING: ${{ steps.report.outputs.blocking }}
+          FAILED: ${{ steps.report.outputs.failed }}
+        run: |
+          if [ "${FAILED:-1}" != "0" ]; then echo "::error::A check could not run, so the deployment was not fully checked. See the report."; exit 1; fi
+          if [ "${BLOCKING:-1}" != "0" ]; then echo "::error::$BLOCKING finding(s) at or above the block level. See the report in the job summary."; exit 1; fi
+          echo "No blocking findings."
