@@ -23,6 +23,8 @@ jobs:
         run: python3 scripts/build.py --check
       - name: Report script handles sample Supabase advisor output
         run: python3 scripts/test_report.py
+      - name: Weekly scan refuses production addresses
+        run: python3 scripts/test_guard.py
 
   vulnerable:
     name: Scan the vulnerable fixture
@@ -80,21 +82,9 @@ jobs:
       artifact-name: selftest-weekly-clean
       setup-command: bash fixtures/live/start.sh
 
-  weekly-refuses-production:
-    name: Weekly scan refuses a production address
-    uses: ./.github/workflows/weekly-scan.yml
-    permissions:
-      contents: read
-      issues: write
-    with:
-      target-url: https://MGE-Insights.example/dashboard
-      production-hosts: "other.example, mge-insights.example"
-      create-issues: false
-      artifact-name: selftest-weekly-refused
-
   check:
     name: Check the results
-    needs: [vulnerable, clean, weekly-leaky, weekly-clean, weekly-refuses-production]
+    needs: [vulnerable, clean, weekly-leaky, weekly-clean]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -107,7 +97,6 @@ jobs:
           VULN_RESULT: ${{ needs.vulnerable.result }}
           WEEKLY_LEAKY_RESULT: ${{ needs.weekly-leaky.result }}
           WEEKLY_CLEAN_RESULT: ${{ needs.weekly-clean.result }}
-          REFUSED_RESULT: ${{ needs.weekly-refuses-production.result }}
         run: |
           python3 - <<'PY'
           import json, os, sys
@@ -162,8 +151,5 @@ jobs:
           check(f"Locked-down app: no access, Nuclei or high findings ({bad})", not bad)
           print("Lower-level notes on the locked-down app:", [f["title"] for f in k["findings"]])
           check("Locked-down weekly scan passed", os.environ["WEEKLY_CLEAN_RESULT"] == "success")
-          check("Weekly scan refused the production address", os.environ["REFUSED_RESULT"] == "failure")
-          r = json.load(open("selftest-weekly-refused/findings.json"))
-          check(f"No scanner touched the refused address ({r['tools']})", all(s == "did not run" for s in r["tools"].values()))
           sys.exit(0 if all(checks) else 1)
           PY

@@ -79,17 +79,37 @@ jobs:
           PROD: ${{ inputs.production-hosts }}
         run: |
           set -euo pipefail
-          host=$(python3 -c 'import sys,urllib.parse;print((urllib.parse.urlparse(sys.argv[1]).hostname or "").lower())' "$TARGET_URL")
-          [ -n "$host" ] || { echo "::error::target-url is not a valid address"; exit 1; }
-          [ -n "${PROD// /}" ] || { echo "::error::production-hosts must list your production host names"; exit 1; }
-          IFS=',' read -ra hosts <<< "$PROD"
-          for p in "${hosts[@]}"; do
-            p=$(echo "$p" | tr -d ' ' | tr 'A-Z' 'a-z')
-            if [ -n "$p" ] && [ "$host" = "$p" ]; then
-              echo "::error::Refusing to scan $host: it is listed as production."; exit 1
-            fi
-          done
-          echo "Target $host is not on the production list. Continuing."
+          # >>> BEGIN scripts/guard.py (copied in by scripts/build.py)
+          cat > "$RUNNER_TEMP/guard.py" <<'MGE_EOF'
+          #!/usr/bin/env python3
+          """Refuse to scan production. Usage: guard.py <target-url> "<comma-separated production hosts>"
+          Exits 1 (and prints why) if the target is not a valid address, the list is empty, or the
+          target's host is on the list. Comparison ignores letter case, ports, paths and a trailing dot."""
+          import sys
+          import urllib.parse
+
+
+          def check(target, production):
+              host = (urllib.parse.urlparse(target.strip()).hostname or "").rstrip(".").lower()
+              prod = {h.strip().rstrip(".").lower() for h in production.split(",") if h.strip()}
+              if not host:
+                  return f"target-url '{target}' is not a valid address"
+              if not prod:
+                  return "production-hosts must list your production host names"
+              if host in prod:
+                  return f"refusing to scan {host}: it is listed as production"
+              return None
+
+
+          if __name__ == "__main__":
+              problem = check(sys.argv[1], sys.argv[2])
+              if problem:
+                  print(f"::error::{problem}")
+                  sys.exit(1)
+              print("Target is not on the production list. Continuing.")
+          MGE_EOF
+          # <<< END scripts/guard.py
+          python3 "$RUNNER_TEMP/guard.py" "$TARGET_URL" "$PROD"
           mkdir -p "$RAW_DIR/status" "$OUT_DIR" && chmod 777 "$RAW_DIR"
 
       - name: Get the code
