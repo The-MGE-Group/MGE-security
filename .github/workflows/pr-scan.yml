@@ -75,12 +75,13 @@ jobs:
           tar -xzf trufflehog.tgz -C bin trufflehog
           chmod +x bin/*
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          # Opengrep community rules, pinned to one commit. Only rule files, no test files.
+          # Opengrep community rules, pinned to one commit. Only security rules (not style or
+          # correctness rules), and only rule files, no test files.
           git init -q rules-src
           git -C rules-src fetch -q --depth 1 https://github.com/opengrep/opengrep-rules f1d2b562b414783763fd02a6ed2736eaed622efa
           git -C rules-src checkout -q FETCH_HEAD
           mkdir rules
-          (cd rules-src && find javascript typescript python yaml/github-actions -name '*.yaml' \
+          (cd rules-src && find javascript typescript python yaml/github-actions -path '*/security/*' -name '*.yaml' \
             ! -name '*.test.yaml' ! -name '*.fixed.*' -exec cp --parents {} ../rules/ \;)
           echo "Opengrep rules: $(find rules -name '*.yaml' | wc -l) files"
 

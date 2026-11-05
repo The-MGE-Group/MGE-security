@@ -48,8 +48,10 @@ only require sharing changes to that package itself.
 
 ## 5. Opengrep rules: the community rule set, four languages
 
-Opengrep runs the [opengrep-rules](https://github.com/opengrep/opengrep-rules) folders for
-JavaScript, TypeScript, Python and GitHub Actions workflow files. Rules marked ERROR block,
+Opengrep runs the `security` rules from the [opengrep-rules](https://github.com/opengrep/opengrep-rules)
+folders for JavaScript, TypeScript, Python and GitHub Actions workflow files. Style and correctness
+rules are left out: on MGE Insights' first scan they made 546 of the 588 findings (for example 378
+"text not translated" notes) and one blocking finding that was not about security. Rules marked ERROR block,
 WARNING is reported, INFO is reported. GitHub Actions workflow rules were added because a
 workflow file can leak secrets the same way code can.
 

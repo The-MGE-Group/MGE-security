@@ -20,7 +20,7 @@ What's next: [docs/ROADMAP.md](docs/ROADMAP.md).
 | Packages with a published vulnerability | [OSV-Scanner](https://github.com/google/osv-scanner) 2.7.0 | high or critical advisory |
 | Packages reported as malicious (OpenSSF feed) | OSV-Scanner 2.7.0 | always |
 | Licenses that can force you to publish your code | OSV-Scanner 2.7.0 with [deps.dev](https://deps.dev) data | GPL, AGPL, SSPL and similar |
-| Risky code patterns | [Opengrep](https://github.com/opengrep/opengrep) 1.31.0, community rules | rule marked ERROR |
+| Risky code patterns | [Opengrep](https://github.com/opengrep/opengrep) 1.31.0, community security rules | rule marked ERROR |
 | Next.js and Supabase mistakes (MGE rules, see below) | Opengrep 1.31.0, [rules/mge.yaml](rules/mge.yaml) | secret key reachable from the browser |
 | List of every package (SBOM) | OSV-Scanner 2.7.0 | never (attached to the run as `sbom.cdx.json`) |
 
