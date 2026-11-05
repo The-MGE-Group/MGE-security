@@ -1,0 +1,89 @@
+# Proves the PR scan works: each scanner must catch its planted problem in
+# fixtures/vulnerable, and a clean project (fixtures/clean) must pass.
+name: Self-test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  up-to-date:
+    name: Workflow matches its source
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rebuild pr-scan.yml from scripts/ and compare
+        run: |
+          python3 scripts/build.py
+          git diff --exit-code -- .github/workflows/pr-scan.yml || {
+            echo "::error::pr-scan.yml is out of date. Run: python3 scripts/build.py"; exit 1; }
+
+  vulnerable:
+    name: Scan the vulnerable fixture
+    uses: ./.github/workflows/pr-scan.yml
+    permissions:
+      contents: read
+      issues: write
+    with:
+      path: fixtures/vulnerable
+      block-on: none
+      create-issues: false
+      artifact-name: selftest-vulnerable
+
+  clean:
+    name: Scan the clean fixture
+    uses: ./.github/workflows/pr-scan.yml
+    permissions:
+      contents: read
+      issues: write
+    with:
+      path: fixtures/clean
+      create-issues: false
+      artifact-name: selftest-clean
+
+  check:
+    name: Check the results
+    needs: [vulnerable, clean]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: selftest-*
+      - name: Every planted problem found, clean project passes
+        env:
+          CLEAN_RESULT: ${{ needs.clean.result }}
+          VULN_RESULT: ${{ needs.vulnerable.result }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          v = json.load(open("selftest-vulnerable/findings.json"))
+          c = json.load(open("selftest-clean/findings.json"))
+          checks = []
+          def check(name, ok):
+              checks.append(ok)
+              print(("PASS " if ok else "FAIL ") + name)
+          def has(tool, kind, text):
+              return any(f["tool"] == tool and f["kind"] == kind and text in f["title"] + f["proof"] for f in v["findings"])
+          for t, s in v["tools"].items():
+              check(f"{t} ran on the vulnerable fixture ({s})", s.startswith("ok"))
+          check("Gitleaks found the planted private key", has("gitleaks", "secret", "deploy-key.pem"))
+          check("Opengrep found the SQL built from user input", has("opengrep", "code", "tainted-sql-string"))
+          check("OSV found vulnerable lodash 4.17.15", has("osv", "vulnerable-dependency", "lodash@4.17.15"))
+          check("OSV found malicious flatmap-stream 0.1.1", has("osv", "malicious-package", "flatmap-stream@0.1.1"))
+          check("OSV flagged the GPL package", has("osv", "license", "GPL"))
+          check("Vulnerable fixture would block a merge at the default level",
+                any(f["severity"] in ("critical", "high") for f in v["findings"]))
+          check("Vulnerable scan job finished (block-on none)", os.environ["VULN_RESULT"] == "success")
+          for t, s in c["tools"].items():
+              check(f"{t} ran on the clean fixture ({s})", s.startswith("ok"))
+          check(f"Clean fixture has no findings (found {len(c['findings'])})", not c["findings"])
+          check("Clean scan job passed", os.environ["CLEAN_RESULT"] == "success")
+          sys.exit(0 if all(checks) else 1)
+          PY

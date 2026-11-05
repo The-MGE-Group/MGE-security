@@ -1,0 +1,10 @@
+{
+  "name": "mge-security-vulnerable-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@ckeditor/ckeditor5-core": "41.0.0",
+    "flatmap-stream": "0.1.1",
+    "lodash": "4.17.15"
+  }
+}
