@@ -5,14 +5,16 @@ rules:
     languages: [javascript, typescript]
     severity: ERROR
     message: >-
-      `$VAR` starts with NEXT_PUBLIC_, so Next.js copies its value into the code sent to every
-      visitor's browser, but its name says it is a secret. Rename it without NEXT_PUBLIC_, use it only
-      in server code, and rotate the key if this was ever deployed.
+      `$VAR` starts with NEXT_PUBLIC_ or VITE_, so its value is copied into the code sent to every
+      visitor's browser, but its name says it is a secret. Rename it, use it only in server code,
+      and rotate the key if this was ever deployed.
     patterns:
-      - pattern: process.env.$VAR
+      - pattern-either:
+          - pattern: process.env.$VAR
+          - pattern: import.meta.env.$VAR
       - metavariable-regex:
           metavariable: $VAR
-          regex: ^NEXT_PUBLIC_\w*(SECRET|SERVICE_ROLE|PRIVATE|PASSWORD)
+          regex: ^(NEXT_PUBLIC_|VITE_)\w*(SECRET|SERVICE_ROLE|PRIVATE|PASSWORD)
 
   - id: mge-supabase-service-role-in-browser-code
     languages: [javascript, typescript]
@@ -36,8 +38,16 @@ rules:
       `getSession()` reads the login from the cookie without checking it with Supabase, so on the server
       it must not be trusted to decide who the user is. Use `getUser()` (or `getClaims()`) instead.
       Supabase's own Next.js guide says the same.
+    # Only files that are clearly server code: Next.js route handlers, middleware or proxy, server
+    # actions, API pages. In browser code getSession() is fine.
+    paths:
+      include:
+        - "route.[jt]s"
+        - "middleware.[jt]s"
+        - "proxy.[jt]s"
+        - "actions.[jt]s"
+        - "*.server.[jt]s"
+        - "/pages/api/"
+        - "**/pages/api/**"
     patterns:
       - pattern: $SUPA.auth.getSession()
-      - pattern-not-inside: |
-          "use client";
-          ...

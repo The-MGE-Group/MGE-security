@@ -119,6 +119,7 @@ jobs:
           check("OSV flagged the GPL package", has("osv", "license", "GPL"))
           for rule in ("mge-next-public-secret", "mge-supabase-service-role-in-browser-code", "mge-supabase-getsession-on-server"):
               check(f"MGE rule {rule} fired", has("opengrep", "code", rule))
+          check("MGE rule caught the VITE_ secret too", has("opengrep", "code", "vite/keys.ts"))
           sbom = open("selftest-vulnerable/sbom.cdx.json").read()
           check("Package list (SBOM) lists lodash 4.17.15", '"lodash"' in sbom and "4.17.15" in sbom)
           check("Vulnerable fixture would block a merge at the default level",

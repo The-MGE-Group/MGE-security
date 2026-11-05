@@ -11,8 +11,8 @@ Nothing here is real. Do not install it, run it, or copy code from it.
 | Known-malicious package: `flatmap-stream@0.1.1` | `package-lock.json` | OSV-Scanner (malicious-packages feed) |
 | GPL-licensed package: `@ckeditor/ckeditor5-core@41.0.0` | `package-lock.json` | OSV-Scanner license check |
 | Supabase secret key in browser code | `next/admin-panel.tsx` | MGE rule `mge-supabase-service-role-in-browser-code` |
-| Secret exposed through a `NEXT_PUBLIC_` name | `next/session.ts` | MGE rule `mge-next-public-secret` |
-| `getSession()` trusted on the server | `next/session.ts` | MGE rule `mge-supabase-getsession-on-server` |
+| Secret exposed through a `NEXT_PUBLIC_` or `VITE_` name | `next/session.ts`, `vite/keys.ts` | MGE rule `mge-next-public-secret` |
+| `getSession()` trusted on the server | `next/app/api/me/route.ts` | MGE rule `mge-supabase-getsession-on-server` |
 
 TruffleHog only reports keys it can prove are live. A real live key can't be planted safely,
 so the self-test only checks that TruffleHog ran without errors.

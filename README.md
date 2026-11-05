@@ -25,9 +25,9 @@ What's next: [docs/ROADMAP.md](docs/ROADMAP.md).
 | List of every package (SBOM) | OSV-Scanner 2.7.0 | never (attached to the run as `sbom.cdx.json`) |
 
 MGE rules:
-- `mge-next-public-secret`: a `NEXT_PUBLIC_` variable whose name says it's a secret.
+- `mge-next-public-secret`: a `NEXT_PUBLIC_` or `VITE_` variable whose name says it's a secret.
 - `mge-supabase-service-role-in-browser-code`: the Supabase secret key used in a `"use client"` file.
-- `mge-supabase-getsession-on-server`: `getSession()` trusted on the server (reported, doesn't block).
+- `mge-supabase-getsession-on-server`: `getSession()` in Next.js server files (route handlers, middleware, server actions; reported, doesn't block).
 
 ## What the weekly scan checks
 
