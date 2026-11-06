@@ -141,6 +141,10 @@ jobs:
           check("Access test caught tenant B reading tenant A's report", whas("access", "GET /api/reports/1", ("critical",)))
           check("Access test caught a member deleting a report", whas("access", "DELETE /api/reports/1", ("high",)))
           check("Access test caught the database leak in invoices", whas("access", "`invoices`", ("critical",)))
+          check("Access test found the tenant routes in the code and caught the cross-tenant read",
+                whas("access", "GET /api/v1/tenants/22222222-2222-2222-2222-222222222222/reports", ("critical",)))
+          check("... and the cross-tenant delete",
+                whas("access", "DELETE /api/v1/tenants/22222222-2222-2222-2222-222222222222/reports/", ("critical",)))
           check("Access test listed /settings as not covered",
                 "/settings" in w["inventory"]["Routes in the code that no access test covers"])
           check("ZAP flagged missing security headers", whas("zap", "", ("medium", "high")))

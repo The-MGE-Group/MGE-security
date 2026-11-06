@@ -235,12 +235,13 @@ jobs:
 
           # ---------- Log in every test user (Supabase email + password) ----------
           supa = cfg.get("supabase_url", "").rstrip("/")
-          anon_key = secret(cfg["supabase_anon_key_secret"]) if cfg.get("supabase_anon_key_secret") else ""
+          # The public (anon or publishable) key is public by design, so it may be written in the config.
+          anon_key = cfg.get("supabase_anon_key") or (secret(cfg["supabase_anon_key_secret"]) if cfg.get("supabase_anon_key_secret") else "")
           sessions, users = {}, cfg.get("users", {})
           for label, u in users.items():
               code, body = request("POST", f"{supa}/auth/v1/token?grant_type=password",
                                    {"apikey": anon_key},
-                                   {"email": secret(u["email_secret"]), "password": secret(u["password_secret"])})
+                                   {"email": u.get("email") or secret(u["email_secret"]), "password": secret(u["password_secret"])})
               if code != 200:
                   done(f"failed: could not log in test user '{label}' (HTTP {code})")
               sessions[label] = json.loads(body)
@@ -272,8 +273,31 @@ jobs:
           findings, broken = [], []
           tenants = cfg.get("tenants", {})
 
+          # ---------- Every tenant route found in the code, tried as the wrong tenant ----------
+          auto = []
+          tr = cfg.get("tenant_routes")
+          if tr:
+              param = tr.get("param", ":tenantId")
+              found = set()
+              route_rx = re.compile(r"\.(get|post|put|patch|delete)\(\s*[\"'`](/[^\"'`]*" + re.escape(param) + r"[^\"'`]*)[\"'`]", re.I)
+              for folder in tr.get("files", []):
+                  for f in sorted(Path(folder).rglob("*")):
+                      if f.suffix not in (".ts", ".js", ".mjs") or ".test." in f.name or not f.is_file():
+                          continue
+                      for method, path in route_rx.findall(f.read_text(errors="replace")):
+                          found.add((method.upper(), path))
+              if not found:
+                  done(f"failed: tenant_routes found no routes containing {param} in {tr.get('files')}; check the config")
+              order = {"GET": 0, "POST": 1, "PUT": 1, "PATCH": 1, "DELETE": 2}  # reads first, deletes last
+              victim = tenants[tr["against"]]["id"]
+              for method, path in sorted(found, key=lambda m: (order.get(m[0], 1), m[1])):
+                  concrete = re.sub(r":[A-Za-z_]\w*", lambda m: victim if m.group(0) == param else "00000000-0000-4000-8000-000000000000", path)
+                  auto.append({"as": tr["as"], "method": method, "path": tr.get("prefix", "") + concrete,
+                               "against": tr["against"], "expect": "denied", "strict": True,
+                               "body": None if method == "GET" else {}})
+
           # ---------- 1. App routes ----------
-          for c in cfg.get("checks", []):
+          for c in cfg.get("checks", []) + auto:
               label, method, path = c.get("as"), c.get("method", "GET").upper(), c["path"]
               against = c.get("against")
               marker = (tenants.get(against) or {}).get("marker") if against else None
@@ -296,7 +320,7 @@ jobs:
               same_tenant = against is None or bool(label and users[label].get("tenant") == against)
               # For cross-tenant reads, a marker proves the other tenant's data came back (an empty 200 is not a leak).
               # For role checks inside one tenant, any success is the problem.
-              leaked = allowed and (same_tenant or marker is None or marker in body)
+              leaked = allowed and (same_tenant or c.get("strict") or marker is None or marker in body)
               if leaked:
                   sev = "high" if same_tenant else "critical"
                   what = (f"tenant {against}'s data" if not same_tenant else "an action this role should not be allowed")
@@ -374,7 +398,7 @@ jobs:
 
           if broken:
               done("failed: the test itself did not work, so nothing is proven: " + "; ".join(broken[:5]), findings, uncovered)
-          done("ok", findings, uncovered)
+          done("ok" + (f" ({len(auto)} tenant routes tried automatically)" if auto else ""), findings, uncovered)
           MGE_EOF
           # <<< END scripts/access_test.py
           python3 "$RUNNER_TEMP/access_test.py" || echo "failed: the access test crashed, see the step log" > "$RAW_DIR/status/access"

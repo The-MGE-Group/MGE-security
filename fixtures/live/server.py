@@ -73,6 +73,11 @@ class App(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         u = self.user()
+        if self.path.startswith("/api/v1/tenants/"):
+            tid = self.path.split("/")[4]
+            if not u or (tid != u[1] and not LEAKY):
+                return self.send(404, {"error": "not found"})
+            return self.send(200, {"deleted": True})
         rid = self.path.rsplit("/", 1)[-1]
         if not self.path.startswith("/api/reports/") or rid not in REPORTS:
             return self.send(404, {"error": "not found"})
@@ -91,6 +96,11 @@ class App(BaseHTTPRequestHandler):
             return self.send(200, "<html><head><title>About</title></head><body>About</body></html>", "text/html")
         if url.path == "/.git/config" and LEAKY:
             return self.send(200, "[core]\n\trepositoryformatversion = 0\n", "text/plain")
+        if url.path.startswith("/api/v1/tenants/"):
+            u, tid = self.user(), url.path.split("/")[4]
+            if not u or (tid != u[1] and not LEAKY):
+                return self.send(404, {"error": "not found"})
+            return self.send(200, [{"title": t[1]} for t in REPORTS.values() if t[0] == tid])
         if url.path.startswith("/api/reports/"):
             u, rid = self.user(), url.path.rsplit("/", 1)[-1]
             if rid not in REPORTS or not u or (REPORTS[rid][0] != u[1] and not LEAKY):

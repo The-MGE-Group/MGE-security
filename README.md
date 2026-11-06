@@ -108,8 +108,16 @@ staging branch, and a separate test Supabase project.
 |---|---|
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | Lets the scan past Vercel's preview protection. In Vercel: the project, **Settings**, **Deployment Protection**, **Protection Bypass for Automation** ([Vercel docs](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation)) |
 | `SUPABASE_ADVISOR_TOKEN` | A Supabase access token. If Supabase offers permission choices, give it only "advisors read" |
-| `MGE_TEST_SUPABASE_ANON_KEY` | The **test** Supabase project's public (anon or publishable) key |
-| `MGE_TEST_..._EMAIL`, `MGE_TEST_..._PASSWORD` | One pair per test user named in `access-test.json` |
+| `MGE_TEST_PASSWORD` (or one per user) | The test users' password, as named in `access-test.json` |
+
+Options in `access-test.json`:
+- `tenant_routes`: the test reads your API code, finds every route with the tenant in its address
+  (for example `/v1/tenants/:tenantId/...`), and tries each one as a user of tenant A against tenant
+  B. Any success is a critical finding. New routes are covered automatically, the next run.
+- `checks`: extra requests to try by hand, for example role checks inside one tenant.
+- `database_check`: asks Supabase directly for other tenants' rows. Turn it off (`false`) when the
+  app's tables are not exposed through Supabase's public API.
+- Emails and the Supabase public key may be written in the file; passwords always come from secrets.
 
 Rules for the access test:
 - Use test users and test data only. A `DELETE` or `POST` check that wrongly succeeds really
