@@ -3,9 +3,13 @@
 # Weekly scan: the fake app in fixtures/live, started with and without planted problems.
 name: Self-test
 
+# Skipped when only text pages change (README, docs). Runs once per pull request, and on main.
 on:
   push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
 permissions:
