@@ -148,7 +148,8 @@ jobs:
           check("Access test listed /settings as not covered",
                 "/settings" in w["inventory"]["Routes in the code that no access test covers"])
           check("ZAP flagged missing security headers", whas("zap", "", ("medium", "high")))
-          check("Nuclei found the exposed .git/config", whas("nuclei", "git-config"))
+          check("Nuclei, logged in, found the .git/config only a logged-in user can see", whas("nuclei", "git-config"))
+          check("Access test handed the scanners a login", "logged in as a_admin" in w["tools"]["access"])
           check("testssl.sh flagged the self-signed certificate", whas("testssl", "", ("critical", "high")))
           check("Weekly leaky scan job finished (block-on none)", os.environ["WEEKLY_LEAKY_RESULT"] == "success")
           for t, s in k["tools"].items():

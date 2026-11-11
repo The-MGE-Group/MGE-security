@@ -387,7 +387,9 @@ NOT_CHECKED = {
         "- Production. Only the test deployment above was scanned.",
         "- Routes and tables the access tests don't list. They only prove what they test; see any "
         "\"not covered\" list above.",
-        "- Pages behind a login, for ZAP and Nuclei. They scan as a logged-out visitor.",
+        "- Without `scan_as` in the access config, ZAP and Nuclei scan as a logged-out visitor. With it they log in, "
+        "but ZAP's quick scan still only follows links on pages, not the API calls a page makes; Nuclei is given every API "
+        "address the user may read.",
         "- Business rules nobody wrote down, and new kinds of attack.",
         "- HTTPS on your own domain, if the test deployment uses a Vercel address: then testssl.sh is testing Vercel's settings.",
     ],

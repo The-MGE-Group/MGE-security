@@ -10,7 +10,7 @@ Started with `--leaky` it has planted problems; without it, the same app is lock
 | Tenant A can read tenant B's rows in the `invoices` table | Access tests (database) |
 | Tenant A can list and delete tenant B's reports through `/api/v1/tenants/<B>/reports` | Access tests (routes found in `api-src/` by themselves) |
 | No security headers on the home page | ZAP |
-| `/.git/config` is downloadable | Nuclei |
+| `/.git/config` is downloadable, but only when logged in | Nuclei, logged in as `scan_as` |
 | HTTPS certificate is self-signed | testssl.sh |
 
 The `app/` folder only exists so the access test can list routes nobody tests

@@ -85,5 +85,6 @@
     "prefix": "/api",
     "as": "a_admin",
     "against": "B"
-  }
+  },
+  "scan_as": "a_admin"
 }

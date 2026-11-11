@@ -94,7 +94,8 @@ class App(BaseHTTPRequestHandler):
                                   "<a href='/about'>About</a></body></html>", "text/html")
         if url.path == "/about":
             return self.send(200, "<html><head><title>About</title></head><body>About</body></html>", "text/html")
-        if url.path == "/.git/config" and LEAKY:
+        # Only reachable logged in, so only a logged-in scan can find it.
+        if url.path == "/.git/config" and LEAKY and self.user():
             return self.send(200, "[core]\n\trepositoryformatversion = 0\n", "text/plain")
         if url.path.startswith("/api/v1/tenants/"):
             u, tid = self.user(), url.path.split("/")[4]

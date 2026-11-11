@@ -116,6 +116,7 @@ tenants = cfg.get("tenants", {})
 
 # ---------- Every tenant route found in the code, tried as the wrong tenant ----------
 auto = []
+found = set()
 tr = cfg.get("tenant_routes")
 if tr:
     param = tr.get("param", ":tenantId")
@@ -136,6 +137,24 @@ if tr:
         auto.append({"as": tr["as"], "method": method, "path": tr.get("prefix", "") + concrete,
                      "against": tr["against"], "expect": "denied", "strict": True,
                      "body": None if method == "GET" else {}})
+
+# ---------- Hand the outside scanners a logged-in user (scan_as) ----------
+scan_as = cfg.get("scan_as")
+if scan_as:
+    if scan_as not in sessions:
+        done(f"failed: scan_as names '{scan_as}', which is not a user in {CONFIG}")
+    token = sessions[scan_as]["access_token"]
+    print(f"::add-mask::{token}")  # GitHub hides it in every log from here on
+    tok = RAW / "scan_token"
+    tok.write_text(token)
+    tok.chmod(0o600)
+    own = tenants.get(users[scan_as].get("tenant"), {}).get("id")
+    urls = [TARGET]
+    if tr and own:
+        for method, path in sorted(found):
+            if method == "GET":
+                urls.append(TARGET + tr.get("prefix", "") + re.sub(r":[A-Za-z_]\w*", lambda m: own if m.group(0) == tr.get("param", ":tenantId") else "00000000-0000-4000-8000-000000000000", path))
+    (RAW / "scan_urls.txt").write_text("\n".join(urls) + "\n")
 
 # ---------- 1. App routes ----------
 for c in cfg.get("checks", []) + auto:
@@ -239,4 +258,5 @@ if routes_dir and Path(routes_dir).is_dir():
 
 if broken:
     done("failed: the test itself did not work, so nothing is proven: " + "; ".join(broken[:5]), findings, uncovered)
-done("ok" + (f" ({len(auto)} tenant routes tried automatically)" if auto else ""), findings, uncovered)
+notes = ([f"{len(auto)} tenant routes tried automatically"] if auto else []) + ([f"outside scanners logged in as {scan_as}"] if scan_as else [])
+done("ok" + (f" ({'; '.join(notes)})" if notes else ""), findings, uncovered)

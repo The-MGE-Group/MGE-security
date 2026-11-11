@@ -275,6 +275,7 @@ jobs:
 
           # ---------- Every tenant route found in the code, tried as the wrong tenant ----------
           auto = []
+          found = set()
           tr = cfg.get("tenant_routes")
           if tr:
               param = tr.get("param", ":tenantId")
@@ -295,6 +296,24 @@ jobs:
                   auto.append({"as": tr["as"], "method": method, "path": tr.get("prefix", "") + concrete,
                                "against": tr["against"], "expect": "denied", "strict": True,
                                "body": None if method == "GET" else {}})
+
+          # ---------- Hand the outside scanners a logged-in user (scan_as) ----------
+          scan_as = cfg.get("scan_as")
+          if scan_as:
+              if scan_as not in sessions:
+                  done(f"failed: scan_as names '{scan_as}', which is not a user in {CONFIG}")
+              token = sessions[scan_as]["access_token"]
+              print(f"::add-mask::{token}")  # GitHub hides it in every log from here on
+              tok = RAW / "scan_token"
+              tok.write_text(token)
+              tok.chmod(0o600)
+              own = tenants.get(users[scan_as].get("tenant"), {}).get("id")
+              urls = [TARGET]
+              if tr and own:
+                  for method, path in sorted(found):
+                      if method == "GET":
+                          urls.append(TARGET + tr.get("prefix", "") + re.sub(r":[A-Za-z_]\w*", lambda m: own if m.group(0) == tr.get("param", ":tenantId") else "00000000-0000-4000-8000-000000000000", path))
+              (RAW / "scan_urls.txt").write_text("\n".join(urls) + "\n")
 
           # ---------- 1. App routes ----------
           for c in cfg.get("checks", []) + auto:
@@ -398,7 +417,8 @@ jobs:
 
           if broken:
               done("failed: the test itself did not work, so nothing is proven: " + "; ".join(broken[:5]), findings, uncovered)
-          done("ok" + (f" ({len(auto)} tenant routes tried automatically)" if auto else ""), findings, uncovered)
+          notes = ([f"{len(auto)} tenant routes tried automatically"] if auto else []) + ([f"outside scanners logged in as {scan_as}"] if scan_as else [])
+          done("ok" + (f" ({'; '.join(notes)})" if notes else ""), findings, uncovered)
           MGE_EOF
           # <<< END scripts/access_test.py
           python3 "$RUNNER_TEMP/access_test.py" || echo "failed: the access test crashed, see the step log" > "$RAW_DIR/status/access"
@@ -412,11 +432,17 @@ jobs:
           case "$MODE" in baseline) script=zap-baseline.py ;; full) script=zap-full-scan.py ;;
             *) echo "failed: zap-mode must be baseline or full" > "$RAW_DIR/status/zap"; exit 0 ;; esac
           host=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.urlparse(sys.argv[1]).hostname)' "$TARGET_URL")
-          # The Vercel bypass header is only sent to the target host.
-          auth=(); [ -n "$BYPASS_SECRET" ] && auth=(-e ZAP_AUTH_HEADER=x-vercel-protection-bypass -e ZAP_AUTH_HEADER_VALUE="$BYPASS_SECRET" -e ZAP_AUTH_HEADER_SITE="$host")
+          # Both headers go to the target host only: the Vercel bypass, and (with scan_as) the test user's login.
+          auth=(); z=()
+          if [ -s "$RAW_DIR/scan_token" ]; then
+            auth=(-e ZAP_AUTH_HEADER=Authorization -e ZAP_AUTH_HEADER_VALUE="Bearer $(cat "$RAW_DIR/scan_token")" -e ZAP_AUTH_HEADER_SITE="$host")
+            [ -n "$BYPASS_SECRET" ] && z=(-z "-config replacer.full_list(0).description=vercel -config replacer.full_list(0).enabled=true -config replacer.full_list(0).matchtype=REQ_HEADER -config replacer.full_list(0).matchstr=x-vercel-protection-bypass -config replacer.full_list(0).regex=false -config replacer.full_list(0).url=https?://${host}/.* -config replacer.full_list(0).replacement=$BYPASS_SECRET")
+          elif [ -n "$BYPASS_SECRET" ]; then
+            auth=(-e ZAP_AUTH_HEADER=x-vercel-protection-bypass -e ZAP_AUTH_HEADER_VALUE="$BYPASS_SECRET" -e ZAP_AUTH_HEADER_SITE="$host")
+          fi
           docker run --rm --network host -v "$RAW_DIR:/zap/wrk:rw" "${auth[@]}" \
             ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af \
-            "$script" -t "$TARGET_URL" -J zap.json -I -m 5
+            "$script" -t "$TARGET_URL" -J zap.json -I -m 5 "${z[@]}"
           code=$?
           echo "ZAP exit code $code"
           # 0 = nothing found, 2 = warnings found (with -I those don't fail); anything else is a crash.
@@ -433,7 +459,13 @@ jobs:
           args=(); IFS=',' read -ra parts <<< "$TEMPLATES"
           for p in "${parts[@]}"; do args+=(-t "$T/$(echo "$p" | tr -d ' ')"); done
           hdr=(); [ -n "$BYPASS_SECRET" ] && hdr=(-H "x-vercel-protection-bypass: $BYPASS_SECRET")
-          nuclei -u "$TARGET_URL" "${args[@]}" "${hdr[@]}" -severity low,medium,high,critical -etags dos,fuzz \
+          # With scan_as: logged in, and also every API address the user may read, not only the home page.
+          targets=(-u "$TARGET_URL")
+          if [ -s "$RAW_DIR/scan_token" ]; then
+            hdr+=(-H "Authorization: Bearer $(cat "$RAW_DIR/scan_token")")
+            [ -s "$RAW_DIR/scan_urls.txt" ] && targets=(-l "$RAW_DIR/scan_urls.txt")
+          fi
+          nuclei "${targets[@]}" "${args[@]}" "${hdr[@]}" -severity low,medium,high,critical -etags dos,fuzz \
             -eid generic-tokens,credentials-disclosure -ni -duc -silent -jsonl -o "$RAW_DIR/nuclei.jsonl"
           code=$?
           touch "$RAW_DIR/nuclei.jsonl"
@@ -876,7 +908,9 @@ jobs:
                   "- Production. Only the test deployment above was scanned.",
                   "- Routes and tables the access tests don't list. They only prove what they test; see any "
                   "\"not covered\" list above.",
-                  "- Pages behind a login, for ZAP and Nuclei. They scan as a logged-out visitor.",
+                  "- Without `scan_as` in the access config, ZAP and Nuclei scan as a logged-out visitor. With it they log in, "
+                  "but ZAP's quick scan still only follows links on pages, not the API calls a page makes; Nuclei is given every API "
+                  "address the user may read.",
                   "- Business rules nobody wrote down, and new kinds of attack.",
                   "- HTTPS on your own domain, if the test deployment uses a Vercel address: then testssl.sh is testing Vercel's settings.",
               ],
