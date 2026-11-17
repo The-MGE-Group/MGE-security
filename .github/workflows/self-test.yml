@@ -25,6 +25,8 @@ jobs:
         run: python3 scripts/test_report.py
       - name: Weekly scan refuses production addresses
         run: python3 scripts/test_guard.py
+      - name: AI code review keeps only confirmed lines and never breaks the scan (fake Claude)
+        run: python3 scripts/test_ai_review.py
       - name: Issues open once and close only when safe (fake GitHub)
         run: node scripts/test_issues.js
 
@@ -110,8 +112,9 @@ jobs:
               print(("PASS " if ok else "FAIL ") + name)
           def has(tool, kind, text):
               return any(f["tool"] == tool and f["kind"] == kind and text in f["title"] + f["proof"] for f in v["findings"])
+          # The AI review needs an API key, which the self-test does not have: it must say "skipped", not fail.
           for t, s in v["tools"].items():
-              check(f"{t} ran on the vulnerable fixture ({s})", s.startswith("ok"))
+              check(f"{t} ran on the vulnerable fixture ({s})", s.startswith("skipped" if t == "ai" else "ok"))
           check("Gitleaks found the planted private key", has("gitleaks", "secret", "deploy-key.pem"))
           check("Opengrep found the SQL built from user input", has("opengrep", "code", "tainted-sql-string"))
           check("OSV found vulnerable lodash 4.17.15", has("osv", "vulnerable-dependency", "lodash@4.17.15"))
@@ -126,7 +129,7 @@ jobs:
                 any(f["severity"] in ("critical", "high") for f in v["findings"]))
           check("Vulnerable scan job finished (block-on none)", os.environ["VULN_RESULT"] == "success")
           for t, s in c["tools"].items():
-              check(f"{t} ran on the clean fixture ({s})", s.startswith("ok"))
+              check(f"{t} ran on the clean fixture ({s})", s.startswith("skipped" if t == "ai" else "ok"))
           check(f"Clean fixture has no findings (found {len(c['findings'])})", not c["findings"])
           check("Clean scan job passed", os.environ["CLEAN_RESULT"] == "success")
 

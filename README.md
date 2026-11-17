@@ -23,6 +23,7 @@ What's next: [docs/ROADMAP.md](docs/ROADMAP.md).
 | Risky code patterns | [Opengrep](https://github.com/opengrep/opengrep) 1.31.0, community security rules | rule marked ERROR |
 | Next.js and Supabase mistakes (MGE rules, see below) | Opengrep 1.31.0, [rules/mge.yaml](rules/mge.yaml) | secret key reachable from the browser |
 | List of every package (SBOM) | OSV-Scanner 2.7.0 | never (attached to the run as `sbom.cdx.json`) |
+| Logic mistakes in what the pull request changes (optional, see below) | Claude Opus 5.5, [scripts/ai_review.py](scripts/ai_review.py) | never (notes only) |
 
 MGE rules:
 - `mge-next-public-secret`: a `NEXT_PUBLIC_` or `VITE_` variable whose name says it's a secret.
@@ -53,7 +54,9 @@ A green check means these tools found nothing. It does not mean the software is 
   nothing more. Business rules nobody wrote down can't be tested.
 - **Logged-in pages, for ZAP and Nuclei.** They scan as a logged-out visitor. The access test
   is what checks the logged-in side.
-- **Logic mistakes in general.** Code rules only know common patterns.
+- **Logic mistakes in general.** Code rules only know common patterns. The AI code review looks
+  for them in each pull request's changes, but it is an opinion: it can miss real problems and
+  can be wrong.
 - **New or unpublished problems.** Vulnerabilities and malicious packages are only caught once reported.
 - **Packages without a lockfile**, and **outdated packages** (Dependabot handles those, see below).
 - **Secrets in unusual formats.** TruffleHog only reports keys it proved are live.
@@ -79,7 +82,42 @@ Enterprise ([GitHub docs](https://docs.github.com/en/repositories/configuring-br
 On the free plan the check still turns red, but merging is not stopped.
 
 Settings (under `with:`): `block-on` (`critical`, `high` default, `medium`, `none`), `path`
-(folder to scan, default `.`), `allowed-licenses`, `create-issues` (default `true`).
+(folder to scan, default `.`), `allowed-licenses`, `create-issues` (default `true`), `ai-review`
+(default `true`; only does anything once the secret below is added).
+
+## Switching on the AI code review in a project
+
+With a Claude API key, Claude reads what each pull request changes and adds notes to the same
+report, marked "AI review". It looks for what fixed rules can't see: a route that never checks
+who is calling, a query that trusts a tenant id sent by the browser, a check that was removed.
+
+1. Create a key at https://platform.claude.com (**API keys**, **Create key**). The API is billed
+   by use, separately from a Claude subscription.
+2. In the project on GitHub: **Settings**, **Secrets and variables**, **Actions**,
+   **New repository secret**. Name it `ANTHROPIC_API_KEY` and paste the key. Add it to each
+   project: on GitHub's free plan, organization secrets don't reach private repositories
+   ([GitHub docs](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)).
+3. Make sure the project's `.github/workflows/mge-security.yml` has the `secrets:` lines from
+   [templates/mge-security.yml](templates/mge-security.yml). Projects set up before this was
+   added need those two lines copied in.
+
+What to know:
+- **It never blocks.** Its notes are shown at their level but don't turn the check red and don't
+  open issues. If Claude can't be reached, the report shows a warning and the result comes from
+  the other checks.
+- **Every note points to a real line.** Claude must quote the line it is talking about, and a
+  note is thrown away unless that text is found in the file.
+- **It only reads pull requests**, and only the files the pull request changes (each in full,
+  plus the diff). Lockfiles, images, generated folders and files over 100,000 characters are left
+  out; files left out for size are named in the report.
+- **The code is sent to Anthropic's API.** Don't switch it on for a project whose code may not
+  leave GitHub.
+- **Cost:** roughly 10 to 40 US cents for a typical pull request, and at most about 1.50 dollars
+  for the largest one it will read. This is an estimate from Opus 5.5's list price (4 dollars per
+  million tokens read, 20 per million written) and the size limits in the script, not a measurement.
+- **No key, no run.** Without the secret the check says "skipped". Pull requests opened by
+  Dependabot or from a fork never receive secrets, so they are skipped too.
+- To switch it off in one project, add `ai-review: false` under `with:`.
 
 ## Switching on Dependabot in a project (outdated packages)
 
@@ -132,6 +170,7 @@ Rules for the access test:
   name must come first, because every word after the colon is read as a rule name.
 - OSV-Scanner: add the advisory to `osv-scanner.toml` next to the lockfile, with a reason
   ([how](https://google.github.io/osv-scanner/configuration/)).
+- AI review: nothing to do. Its notes never block and never open an issue.
 - Then close the GitHub issue. A closed issue is never reopened for the same finding.
 
 ## How we know it works
@@ -146,6 +185,9 @@ every planted problem is found and the clean versions pass:
   (opening once, never reopening a closed issue, closing only when the tool ran cleanly).
 - The Supabase advisor can't run without a real project, so only its report handling is tested,
   using sample output.
+- The AI code review can't run without an API key, so it is tested against a fake Claude: what
+  it sends, that made-up line references are thrown away, that its notes never block, and that
+  a failure never breaks the scan. It has not yet been run against the real API.
 
 ## Files
 

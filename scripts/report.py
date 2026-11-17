@@ -9,6 +9,8 @@ Prints:  blocking=<n> and failed=<n> lines for $GITHUB_OUTPUT
 
 Rule: a finding is only reported when the scanner gives proof (a file and line,
 or a package name, version and lockfile). Secrets are never written out.
+The AI code review is the one exception: its notes are an opinion tied to a real line,
+so they are shown but never block, and the scan still counts as finished if it could not run.
 """
 import hashlib
 import json
@@ -45,6 +47,7 @@ TOOLS = {
         "osv": "OSV-Scanner (known-vulnerable or malicious packages, and licenses)",
         "sbom": "Package list (SBOM, CycloneDX format, attached to this run)",
         "opengrep": "Opengrep (risky code patterns, community rules plus MGE rules)",
+        "ai": "AI code review (Claude reads what the pull request changes; notes only, never blocks)",
     },
     "weekly": {
         "access": "Access tests (cross-tenant and role checks, app routes and database)",
@@ -55,6 +58,8 @@ TOOLS = {
         "subfinder": "Subfinder (public list of your subdomains, information only)",
     },
 }[KIND]
+# Checks that only advise: their findings never block, and the scan can finish without them.
+ADVISORY = {"ai"}
 
 
 def load(name, lines=False):
@@ -241,6 +246,21 @@ for r in og.get("results", []) if isinstance(og, dict) else []:
         f"{rule}|{path}|{line}")
 
 
+# ---------- AI code review (written by ai_review.py; notes only) ----------
+def plain(text, limit):
+    """Claude's words as one plain line: no HTML, and no links or images it could have been tricked into adding."""
+    text = re.sub(r"[<>]", "", " ".join(str(text).split())).replace("](", "] (")
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+for f in (load("ai.json") or {}).get("findings", []):
+    path, line = f["path"], f["line"]
+    add("ai", "ai-review", f["severity"], f"AI review: {plain(f['title'], 160)}",
+        link(path, line),
+        f"Claude read this pull request and pointed to {path} line {line}: {plain(f['explanation'], 900)}",
+        f"{plain(f['fix'], 600)} This is an AI's opinion, not proof: read the line and decide. It does not block the merge.",
+        f"{path}|{line}")
+
 # ---------- Access tests (written by access_test.py, already in finding form) ----------
 access = load("access.json") or {}
 for f in access.get("findings", []):
@@ -326,10 +346,12 @@ inventory["Subdomains listed in public sources (not scanned)"] = subs
 findings.sort(key=lambda f: (ORDER.index(f["severity"]), f["tool"], f["title"]))
 counts = {s: sum(f["severity"] == s for f in findings) for s in ORDER}
 for f in findings:
-    f["blocks"] = f["severity"] in BLOCK_LEVELS
+    f["blocks"] = f["severity"] in BLOCK_LEVELS and f["tool"] not in ADVISORY
 blocking = [f for f in findings if f["blocks"]]
-failed = {t: status(t) for t in TOOLS if not is_ok(status(t)) and not is_skipped(status(t))}
+broken = {t: status(t) for t in TOOLS if not is_ok(status(t)) and not is_skipped(status(t))}
+failed = {t: s for t, s in broken.items() if t not in ADVISORY}
 skipped = [t for t in TOOLS if is_skipped(status(t))]
+advice = sum(f["tool"] in ADVISORY for f in findings)
 gate = "merging" if KIND == "pr" else "this scan passes"
 
 if failed:
@@ -337,11 +359,14 @@ if failed:
 elif blocking:
     verdict = f"**Blocked.** {len(blocking)} problem(s) at or above the \"{BLOCK_ON}\" level must be fixed before {gate}."
 elif findings:
-    verdict = f"**Passed with notes.** No problem at or above the \"{BLOCK_ON}\" level. {len(findings)} lower-level note(s) below."
+    verdict = (f"**Passed with notes.** Nothing blocks {gate}. {len(findings)} note(s) below"
+               + (f", {advice} of them from the AI review, which never blocks." if advice else "."))
 else:
     verdict = "**Passed.** None of the checks that ran found a problem."
 if skipped and not failed:
     verdict += f" {len(skipped)} check(s) were skipped; see below."
+if len(broken) > len(failed) and not failed:
+    verdict += " The AI code review did not run, so this result is from the other checks only; see below."
 
 title = "pull-request scan" if KIND == "pr" else "weekly scan of a test deployment"
 scope = (f"Scanned: `{SCAN_PATH}` at commit `{SHA[:12]}`." if KIND == "pr"
@@ -353,7 +378,7 @@ md = [f"# MGE Security: {title}", "", verdict, "",
 md += ["## Checks", ""]
 for t, label in TOOLS.items():
     s = status(t)
-    icon = "✅" if is_ok(s) else "⏭️" if is_skipped(s) else "❌"
+    icon = "✅" if is_ok(s) else "⏭️" if is_skipped(s) else "⚠️" if t in ADVISORY else "❌"
     extra = "" if s == "ok" else f" ({s[2:].strip(' ()')})" if is_ok(s) else f": **{s}**"
     md.append(f"- {icon} {label}{extra}")
 md.append("")
@@ -377,7 +402,9 @@ NOT_CHECKED = {
     "pr": [
         "- Whether the running app is safe (logins, permissions, one customer seeing another customer's data). "
         "The weekly scan covers that against a test deployment.",
-        "- Logic mistakes and new kinds of attack. The code rules only know common, well-known patterns.",
+        "- Logic mistakes and new kinds of attack. The code rules only know common, well-known patterns. The AI "
+        "review looks for logic mistakes in what the pull request changes, but it can miss real problems and can "
+        "be wrong, which is why it never blocks.",
         "- Vulnerabilities nobody has published yet, and malicious packages not yet reported.",
         "- Packages not pinned in a lockfile (for example a `package.json` without `pnpm-lock.yaml`).",
         "- Secrets that don't match a known format. TruffleHog only reports keys it could prove are live.",

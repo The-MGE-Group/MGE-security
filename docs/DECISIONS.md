@@ -156,3 +156,36 @@ is the fallback, and the run fails, rather than passing, if no tables can be fou
 `getSession()` used on the server, which Supabase's own server-side guide warns against ([Supabase docs](https://supabase.com/docs/guides/auth/server-side/nextjs)) (reported
 only). Checking that every query filters by tenant is not a simple pattern, so it is left to the
 access test.
+
+## 15. AI code review: notes only, and the one check allowed to fail quietly
+
+Claude Opus 5.5 reads each pull request's changed files and diff and adds notes to the report.
+
+- **Never blocks, never opens issues.** An AI reviewer can be wrong in both directions, and the
+  text it reads is written by whoever opened the pull request, who could try to talk it into or
+  out of a finding. So its opinion is shown and nothing more.
+- **Exception to decision 9.** If Claude can't be reached (no credit, rate limit, outage, bad
+  key), the scan still finishes on the other checks and the report shows a warning. Otherwise
+  an outage at Anthropic would turn every pull request in every project red over a check that
+  could not have blocked anyway. No key at all means "skipped".
+- **A note needs a confirmed line.** Claude must quote the line it means. The note is dropped
+  unless that text is in the file, and the report links to where the text really is.
+- **Pull requests only, changed files only.** That keeps the cost per run small and known. Each
+  changed file is sent in full with line numbers, because a missing login check can only be
+  seen with the whole route in view. Nothing is cut short without saying so: a file that
+  doesn't fit is named in the report as not reviewed.
+- **The pull request's code is never run**, only read from git as text. Symlinks are not
+  followed. Claude gets no tools. Its words are stripped of HTML and links before they go into
+  the report. The API key is given to that one step only.
+- **Claude's own SDK, pinned like every other tool.** `scripts/ai-requirements.txt` lists
+  `anthropic` 2.4.0 and its 15 dependencies at exact versions with SHA-256 checksums, and pip
+  refuses anything else (`--require-hashes`). Each checksum was compared with PyPI's, and every
+  version was at least two weeks old on 2026-11-17. Four packages were held one release back
+  to meet that (httpx2, httpcore2, pydantic, jiter). It is installed only when a review will
+  really run. Dependabot does not update this list; it is refreshed by hand.
+- **If Opus 5.5's safety filter declines** to read security-sensitive code, the request asks
+  Anthropic to retry on the model it recommends for that case (`fallbacks: "default"`, a beta
+  feature). If that also declines, the report shows the warning above.
+- **Not yet proven against the real API.** No key was available while building, so the tests
+  use a fake Claude and a local stand-in for the API. The request format follows Anthropic's
+  SDK, version 2.4.0.

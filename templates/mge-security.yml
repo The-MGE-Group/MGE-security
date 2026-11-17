@@ -11,3 +11,6 @@ permissions:
 jobs:
   security:
     uses: The-MGE-Group/MGE-security/.github/workflows/pr-scan.yml@main
+    # Optional: lets Claude read each pull request and add notes. Without the secret that check is skipped.
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -19,6 +19,7 @@ limits, (c) not possible or not worth it right now.
 | 12 | Attack surface (public subdomain list, exposed files) | a | Weekly scan, Subfinder + Nuclei |
 | 13 | SSL and headers | a | Weekly scan, testssl.sh + ZAP |
 | 14 | Supabase security advisor | a | Weekly scan |
+| 17 | AI code review | b | PR scan, Claude Opus 5.5. Notes only, never blocks. Needs an `ANTHROPIC_API_KEY` secret in each project |
 | 22 | Role and cross-tenant access | a | Weekly scan, access test |
 | 23 | Retesting | a | Issues close themselves when a later full scan no longer finds them |
 
@@ -31,7 +32,6 @@ limits, (c) not possible or not worth it right now.
 | 11 | API fuzzing (Schemathesis) | b | Needs an OpenAPI file; AI can draft one, but may miss routes |
 | 15 | Vercel settings checks | b | No off-the-shelf tool; would be a checklist script against Vercel's API |
 | 16 | Prowler | c | No AWS, Azure or Google Cloud in use |
-| 17 | AI code review | b | Needs an `ANTHROPIC_API_KEY` secret |
 | 18 | AI auto-triage | b | AI may label "likely false alarm", never remove or unblock |
 | 19 | AI auto-fix | b | AI opens a fix PR for review; Dependabot already covers package upgrades |
 | 20 | AI pentest stage | b, c for "equal to a human pentest" | |
@@ -40,5 +40,7 @@ limits, (c) not possible or not worth it right now.
 ## Known gaps in what's built
 
 - ZAP and Nuclei scan as a logged-out visitor.
+- The AI code review has only been tested against a fake Claude, not the real API. It gets its
+  first real run when a project adds the key.
 - The Supabase advisor, the Vercel bypass header and the `@supabase/ssr` login cookie have only
   been tested against the fake app, not a real project. They get tested when a project is connected.
