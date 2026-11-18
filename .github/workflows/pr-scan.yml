@@ -404,8 +404,10 @@ jobs:
                       ids = g.get("ids", [])
                       members = [vulns[i] for i in ids if i in vulns]
                       all_ids = sorted(set(ids) | set(g.get("aliases", [])))
+                      # Malware: an OpenSSF MAL- id, or GitHub's malware title ("Malicious code in <package>").
+                      # Not any summary with the word: "a malicious server can ..." describes an ordinary bug.
                       malicious = any(i.startswith("MAL-") for i in all_ids) or any(
-                          "malicious" in (m.get("summary") or "").lower() for m in members)
+                          (m.get("summary") or "").lower().startswith("malicious code in") for m in members)
                       sev = "unknown"
                       try:
                           score = float(g.get("max_severity") or "")
