@@ -27,6 +27,8 @@ jobs:
         run: python3 scripts/build.py --check
       - name: Report script handles sample Supabase advisor output
         run: python3 scripts/test_report.py
+      - name: Every allowed advisory has a reason and an end date
+        run: python3 scripts/test_exceptions.py
       - name: Weekly scan refuses production addresses
         run: python3 scripts/test_guard.py
       - name: Issues open once and close only when safe (fake GitHub)
