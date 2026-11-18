@@ -132,8 +132,11 @@ Rules for the access test:
 - Gitleaks: add the line shown in the report to `.gitleaksignore` in the project.
 - Opengrep: put `// nosemgrep: <rule-name> -- <reason>` on the flagged line or the line above. The rule
   name must come first, because every word after the colon is read as a rule name.
-- OSV-Scanner: add the advisory to `osv-scanner.toml` next to the lockfile, with a reason
-  ([how](https://google.github.io/osv-scanner/configuration/)).
+- OSV-Scanner: add the advisory to `osv-scanner.toml` next to the lockfile, with a reason and an
+  end date (`ignoreUntil`) ([how](https://google.github.io/osv-scanner/configuration/)). If it has no
+  fix and can't be triggered in any project, add it once to [rules/osv-exceptions.toml](rules/osv-exceptions.toml)
+  instead: that list applies to every project, and each entry must end within 90 days.
+  Every report lists the advisories allowed this way.
 - Then close the GitHub issue. A closed issue is never reopened for the same finding.
 
 ## How we know it works

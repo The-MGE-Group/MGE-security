@@ -156,3 +156,22 @@ is the fallback, and the run fails, rather than passing, if no tables can be fou
 `getSession()` used on the server, which Supabase's own server-side guide warns against ([Supabase docs](https://supabase.com/docs/guides/auth/server-side/nextjs)) (reported
 only). Checking that every query filters by tenant is not a simple pattern, so it is left to the
 access test.
+
+## 15. One shared list of allowed advisories, each with an end date
+
+On 2026-11-18 a new picomatch advisory (GHSA-fc5q-39xc-vjpf) turned every MGE Insights pull
+request red. No fixed version existed, and only build tools use picomatch, so nothing could be
+fixed; the only choice was to allow it. Every project carries picomatch, so the same decision
+would have been needed in each one.
+
+`rules/osv-exceptions.toml` is that decision made once: the pull-request scan applies it to every
+project, after the project's own `osv-scanner.toml` files. Each entry needs a reason and an end
+date at most 90 days away (the self-test checks), so nothing is allowed forever: on the end date the
+check turns red again. Every report lists what is allowed, so an exception is never invisible.
+
+Not done: letting build-only packages pass on their own. Build tools run in CI with access to
+the code, so a serious flaw there still matters; a person decides each one.
+
+Projects also run the scan every Monday (template), so a new advisory is found within a week even
+when no pull request is open.
+
