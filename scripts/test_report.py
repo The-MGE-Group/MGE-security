@@ -23,4 +23,17 @@ with tempfile.TemporaryDirectory() as d:
     subprocess.run([sys.executable, "scripts/report.py"], env=env, check=True, capture_output=True)
     f = json.loads((out / "findings.json").read_text())["findings"]
     assert len(f) == 1 and f[0]["severity"] == "high" and "public.invoices" in f[0]["title"], f
+# Allowed advisories stay visible in the pull-request report.
+with tempfile.TemporaryDirectory() as d:
+    raw, out = Path(d, "raw"), Path(d, "out")
+    (raw / "status").mkdir(parents=True)
+    for t in ("gitleaks", "trufflehog", "osv", "sbom", "opengrep"):
+        (raw / "status" / t).write_text("ok")
+    (raw / "osv-config.toml").write_text(
+        'GoVersionOverride = "1.22"\n\n[[IgnoredVulns]]\nid = "GHSA-test-0000-0000"\n'
+        'ignoreUntil = 2026-12-18\nreason = "only build tools use it"\n')
+    env = dict(os.environ, RAW_DIR=str(raw), OUT_DIR=str(out), SCAN_KIND="pr")
+    subprocess.run([sys.executable, "scripts/report.py"], env=env, check=True, capture_output=True)
+    allowed = json.loads((out / "findings.json").read_text())["inventory"]["Advisories allowed for now (not blocking)"]
+    assert allowed == ["GHSA-test-0000-0000 until 2026-12-18: only build tools use it"], allowed
 print("report.py sample checks passed")
