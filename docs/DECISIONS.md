@@ -156,3 +156,21 @@ is the fallback, and the run fails, rather than passing, if no tables can be fou
 `getSession()` used on the server, which Supabase's own server-side guide warns against ([Supabase docs](https://supabase.com/docs/guides/auth/server-side/nextjs)) (reported
 only). Checking that every query filters by tenant is not a simple pattern, so it is left to the
 access test.
+
+## 15. Projects outside The-MGE-Group call the same workflows; the weekly scan names its secrets
+
+This repository is public, so a repository in any organization can call `pr-scan.yml` and
+`weekly-scan.yml`, as long as that organization's Actions policy allows public reusable workflows
+([GitHub docs](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)).
+No copies to keep in sync. But `secrets: inherit` only works within one organization or
+enterprise ([GitHub docs](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)),
+and a secret passed by name must be declared by the called workflow. `weekly-scan.yml` therefore
+declares five optional secrets (Vercel bypass, Supabase advisor token, three test passwords), and
+outside projects use `templates/mge-security-weekly-outside.yml`, which passes them by name. Projects
+inside the organization keep `secrets: inherit`. Whether `inherit` still passes secrets that are
+not declared isn't stated in GitHub's docs; on 2026-11-19 every project's access test used only
+`MGE_TEST_PASSWORD`, which is declared, so nothing depends on it. Use the declared names in new projects.
+
+`projects.yml` is the one list of projects, and `scripts/status.py` checks it against GitHub, so
+"is everything covered?" has an answer that doesn't depend on memory.
+

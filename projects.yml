@@ -1,0 +1,44 @@
+# Every project that should be covered by MGE Security. One entry per repository.
+# This file is the list. `python3 scripts/status.py` checks each entry against GitHub and says
+# what is switched on, what is missing, and whether the last runs passed.
+#
+# Fields:
+#   repo:    owner/name on GitHub. The owner can be any organization or account.
+#   weekly:  true if it has a running site to test (needs a test deployment); false for a
+#            repository with nothing to log in to (static pages, assets).
+#   access_test: false if the site has no logins (skips the access-test reminder).
+#   note:    anything worth remembering.
+# Add a project with /add-project in Claude Code, or by hand: docs/ADD-A-PROJECT.md.
+
+projects:
+  # ---- The-MGE-Group (checked 2026-11-19) ----
+  - repo: The-MGE-Group/toast-insights
+    weekly: true
+    note: "Test Supabase project gvhvlcqqttxpkjtmcooe. Weekly broken since 2026-11-16: secret SUPABASE_TEST_TOKEN missing."
+  - repo: The-MGE-Group/mge-sign
+    weekly: true
+    note: "Test Supabase project mge-sign-test."
+  - repo: The-MGE-Group/mge-group
+    weekly: true
+    access_test: false
+    note: "Company site, no logins, so no access test."
+  - repo: The-MGE-Group/Gotchu
+    weekly: true
+    note: "Weekly scan not set up yet. Supabase is on the second Supabase account (MGE Group free)."
+  - repo: The-MGE-Group/MGE-Shadchan
+    weekly: true
+    note: "Weekly scan not set up yet."
+  - repo: The-MGE-Group/SNA
+    weekly: true
+    note: "Weekly scan not set up yet. Vercel project sna-group is not linked to the repo."
+  - repo: The-MGE-Group/Pitch
+    weekly: false
+    note: "Static pitch page. PR scan not set up yet."
+  - repo: The-MGE-Group/Security-course
+    weekly: false
+    note: "Static course site. PR scan not set up yet."
+
+  # ---- Outside The-MGE-Group: add each one here ----
+  # - repo: some-client-org/their-app
+  #   weekly: true
+  #   note: "Client X. Their Vercel team: ..., test Supabase: ..."

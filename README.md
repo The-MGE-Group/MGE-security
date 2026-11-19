@@ -8,7 +8,9 @@ A security tester you can switch on for any MGE Group project. It has two parts:
 
 Each run writes one plain-English report (job summary plus a downloadable copy). Serious
 findings turn the check red and open a GitHub issue, and the issue closes itself once a later
-scan no longer finds the problem. Why things are built this way: [docs/DECISIONS.md](docs/DECISIONS.md).
+scan no longer finds the problem. **Adding a project (inside or outside The-MGE-Group):** run `/add-project owner/repo` in Claude Code, or follow [docs/ADD-A-PROJECT.md](docs/ADD-A-PROJECT.md). Every covered project is listed in [projects.yml](projects.yml); `python3 scripts/status.py` shows which are fully set up.
+
+Why things are built this way: [docs/DECISIONS.md](docs/DECISIONS.md).
 What's next: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## What the pull-request scan checks
@@ -152,5 +154,6 @@ every planted problem is found and the clean versions pass:
 - `.github/workflows/pr-scan.yml` and `weekly-scan.yml` are what projects call. Blocks between
   `>>> BEGIN` and `<<< END` lines are copied in from `scripts/` and `rules/`: edit those files,
   then run `python3 scripts/build.py`.
-- `templates/` holds the files a project copies.
+- `templates/` holds the files a project copies. `mge-security-weekly-outside.yml` is the weekly file for repositories in other organizations.
+- `projects.yml` lists every project; `scripts/status.py` checks them.
 - `fixtures/` holds the test projects.

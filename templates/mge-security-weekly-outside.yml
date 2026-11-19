@@ -1,0 +1,29 @@
+# For a project OUTSIDE The-MGE-Group organization (a client's or another account's repository).
+# Copy to .github/workflows/mge-security-weekly.yml and replace the values marked CHANGE.
+# Same scan as templates/mge-security-weekly.yml. The only difference: GitHub does not pass
+# secrets to another organization's workflow with `secrets: inherit`, so each one is named below.
+# Secrets that don't exist in this repository are simply sent as empty and that check is skipped.
+name: MGE Security weekly
+on:
+  schedule:
+    - cron: "17 5 * * 1"   # Mondays 05:17 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  weekly:
+    uses: The-MGE-Group/MGE-security/.github/workflows/weekly-scan.yml@main
+    secrets:
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      SUPABASE_ADVISOR_TOKEN: ${{ secrets.SUPABASE_ADVISOR_TOKEN }}
+      # Test users' passwords. In .mge-security/access-test.json, "password_secret" must be one
+      # of these three names. Other names are not passed across organizations.
+      MGE_TEST_PASSWORD: ${{ secrets.MGE_TEST_PASSWORD }}
+      MGE_TEST_PASSWORD_2: ${{ secrets.MGE_TEST_PASSWORD_2 }}
+      MGE_TEST_PASSWORD_3: ${{ secrets.MGE_TEST_PASSWORD_3 }}
+    with:
+      target-url: https://CHANGE-test-deployment.vercel.app      # CHANGE: a preview or staging address
+      production-hosts: CHANGE.example.com, www.CHANGE.example.com  # CHANGE: every production host name
+      supabase-project-ref: ""   # CHANGE: the TEST Supabase project's ref, or leave empty to skip
+      root-domain: ""            # optional: your domain, for the public subdomain list

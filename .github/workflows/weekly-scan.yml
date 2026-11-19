@@ -53,6 +53,20 @@ on:
       artifact-name:
         type: string
         default: mge-security-weekly-report
+    # Projects in The-MGE-Group pass every secret with `secrets: inherit`. GitHub only allows that
+    # inside one organization, so projects in other organizations must name each secret, and a
+    # named secret must be declared here. All are optional; see templates/mge-security-weekly-outside.yml.
+    secrets:
+      VERCEL_AUTOMATION_BYPASS_SECRET:
+        required: false
+      SUPABASE_ADVISOR_TOKEN:
+        required: false
+      MGE_TEST_PASSWORD:
+        required: false
+      MGE_TEST_PASSWORD_2:
+        required: false
+      MGE_TEST_PASSWORD_3:
+        required: false
     outputs:
       blocking:
         value: ${{ jobs.scan.outputs.blocking }}
