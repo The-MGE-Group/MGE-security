@@ -62,7 +62,7 @@ turned into new rules (and old rules get pruned).
 | `max_fix_rounds` | `3` | Failed check rounds before the hook hands off to you |
 | `blocks_before_letting_through` | `2` | Blocked commits in one session before the next is allowed (stamped `none`) |
 | `verify_markers` | `verify`, `code-review` | Skills whose use in the session counts as verification |
-| `protected_paths` | the judging files | Globs Claude may not edit; also used by the CI job (from the base branch) |
+| `protected_paths` | the judging files and the MGE security scan files | Globs Claude may not edit; also used by the CI job (from the base branch). Includes the security workflows, `.mge-security/`, `.gitleaksignore`, `osv-scanner.toml` and `dependabot.yml`, so a change can't switch the scan off or mark its own findings as false alarms |
 
 ## Honest limits
 
