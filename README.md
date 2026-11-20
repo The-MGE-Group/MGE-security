@@ -54,8 +54,9 @@ A green check means these tools found nothing. It does not mean the software is 
 - **Production.** The weekly scan only scans the test address you give it.
 - **Untested routes and unwritten rules.** The access test proves exactly what it tests and
   nothing more. Business rules nobody wrote down can't be tested.
-- **Logged-in pages, for ZAP and Nuclei.** They scan as a logged-out visitor. The access test
-  is what checks the logged-in side.
+- **Logged-in pages, for ZAP and Nuclei, unless `scan_as` is set.** Without it they scan as a
+  logged-out visitor. With it they log in as that one test user and also try the API's read
+  routes found by `tenant_routes`. Pages only other roles can see are still not scanned.
 - **Logic mistakes in general.** Code rules only know common patterns.
 - **New or unpublished problems.** Vulnerabilities and malicious packages are only caught once reported.
 - **Packages without a lockfile**, and **outdated packages** (Dependabot handles those, see below).
@@ -117,6 +118,7 @@ Options in `access-test.json`:
 - `tenant_routes`: the test reads your API code, finds every route with the tenant in its address
   (for example `/v1/tenants/:tenantId/...`), and tries each one as a user of tenant A against tenant
   B. Any success is a critical finding. New routes are covered automatically, the next run.
+- `scan_as`: a test user that ZAP and Nuclei log in as. Pick the user with the most access.
 - `checks`: extra requests to try by hand, for example role checks inside one tenant.
 - `database_check`: asks Supabase directly for other tenants' rows. Turn it off (`false`) when the
   app's tables are not exposed through Supabase's public API.
@@ -133,8 +135,11 @@ Rules for the access test:
 - Gitleaks: add the line shown in the report to `.gitleaksignore` in the project.
 - Opengrep: put `// nosemgrep: <rule-name> -- <reason>` on the flagged line or the line above. The rule
   name must come first, because every word after the colon is read as a rule name.
-- OSV-Scanner: add the advisory to `osv-scanner.toml` next to the lockfile, with a reason
-  ([how](https://google.github.io/osv-scanner/configuration/)).
+- OSV-Scanner: add the advisory to `osv-scanner.toml` next to the lockfile, with a reason and an
+  end date (`ignoreUntil`) ([how](https://google.github.io/osv-scanner/configuration/)). If it has no
+  fix and can't be triggered in any project, add it once to [rules/osv-exceptions.toml](rules/osv-exceptions.toml)
+  instead: that list applies to every project, and each entry must end within 90 days.
+  Every report lists the advisories allowed this way.
 - Then close the GitHub issue. A closed issue is never reopened for the same finding.
 
 ## How we know it works

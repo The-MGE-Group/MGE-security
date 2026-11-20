@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"  # Mondays: catches new advisories even without a pull request
   workflow_dispatch:
 permissions:
   contents: read

@@ -120,7 +120,26 @@ jobs:
           ALLOWED: ${{ inputs.allowed-licenses }}
         run: |
           set +e -uo pipefail
-          osv-scanner scan source -r "$SCAN_PATH" --format json --licenses="$ALLOWED" > "$RAW_DIR/osv.json"
+          # >>> BEGIN rules/osv-exceptions.toml (copied in by scripts/build.py)
+          cat > "$RUNNER_TEMP/osv-exceptions.toml" <<'MGE_EOF'
+          # Advisories allowed for now in EVERY project's pull-request scan (OSV-Scanner format).
+          # Only for an advisory with no fixed version that can't be triggered in any project.
+          # Each entry needs a reason and an end date at most 90 days away (scripts/test_exceptions.py).
+          # On the end date the check turns red again, so someone looks again.
+          # A project's own osv-scanner.toml, next to its lockfile, is still read too.
+
+          [[IgnoredVulns]]
+          id = "GHSA-fc5q-39xc-vjpf"
+          ignoreUntil = 2026-12-18
+          reason = "picomatch: every version is affected and no fix exists. Only build, test and lint tools use it (Vite, Vitest, ESLint, Expo CLI), never the live site, and they only read our own file patterns. Checked 2026-11-18 in toast-insights, mge-sign, MGE-Shadchan and Gotchu."
+          MGE_EOF
+          # <<< END rules/osv-exceptions.toml
+          # The project's own osv-scanner.toml files first, then the shared list for every project.
+          find "$SCAN_PATH" -name osv-scanner.toml -not -path "*/node_modules/*" -exec cat {} + > "$RAW_DIR/osv-config.toml"
+          printf '\n' >> "$RAW_DIR/osv-config.toml"
+          cat "$RUNNER_TEMP/osv-exceptions.toml" >> "$RAW_DIR/osv-config.toml"
+          osv-scanner scan source -r "$SCAN_PATH" --config "$RAW_DIR/osv-config.toml" \
+            --format json --licenses="$ALLOWED" > "$RAW_DIR/osv.json"
           code=$?
           case $code in
             0|1) echo ok > "$RAW_DIR/status/osv" ;;
@@ -237,6 +256,7 @@ jobs:
           import os
           import re
           import sys
+          import tomllib
           from pathlib import Path
 
           RAW = Path(os.environ["RAW_DIR"])
@@ -384,8 +404,10 @@ jobs:
                       ids = g.get("ids", [])
                       members = [vulns[i] for i in ids if i in vulns]
                       all_ids = sorted(set(ids) | set(g.get("aliases", [])))
+                      # Malware: an OpenSSF MAL- id, or GitHub's malware title ("Malicious code in <package>").
+                      # Not any summary with the word: "a malicious server can ..." describes an ordinary bug.
                       malicious = any(i.startswith("MAL-") for i in all_ids) or any(
-                          "malicious" in (m.get("summary") or "").lower() for m in members)
+                          (m.get("summary") or "").lower().startswith("malicious code in") for m in members)
                       sev = "unknown"
                       try:
                           score = float(g.get("max_severity") or "")
@@ -468,6 +490,16 @@ jobs:
           for f in access.get("findings", []):
               add("access", f["kind"], f["severity"], f["title"], f["where"], f["proof"], f["fix"], f["key"])
           inventory = {"Routes in the code that no access test covers": access.get("uncovered_routes", [])}
+
+          # Advisories OSV-Scanner was told to allow, so they stay visible in every report.
+          if (RAW / "osv-config.toml").exists():
+              try:
+                  allowed = tomllib.loads((RAW / "osv-config.toml").read_text()).get("IgnoredVulns", [])
+              except tomllib.TOMLDecodeError as e:
+                  allowed = [{"id": "osv-scanner.toml could not be read", "reason": str(e)}]
+              inventory["Advisories allowed for now (not blocking)"] = [
+                  f"{e.get('id')} until {e.get('ignoreUntil', 'no end date')}: {e.get('reason', 'no reason given')}"
+                  for e in allowed]
 
           # ---------- ZAP ----------
           zap = load("zap.json") or {}

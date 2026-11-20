@@ -1,0 +1,10 @@
+# Advisories allowed for now in EVERY project's pull-request scan (OSV-Scanner format).
+# Only for an advisory with no fixed version that can't be triggered in any project.
+# Each entry needs a reason and an end date at most 90 days away (scripts/test_exceptions.py).
+# On the end date the check turns red again, so someone looks again.
+# A project's own osv-scanner.toml, next to its lockfile, is still read too.
+
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-12-18
+reason = "picomatch: every version is affected and no fix exists. Only build, test and lint tools use it (Vite, Vitest, ESLint, Expo CLI), never the live site, and they only read our own file patterns. Checked 2026-11-18 in toast-insights, mge-sign, MGE-Shadchan and Gotchu."

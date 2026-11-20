@@ -39,6 +39,6 @@ limits, (c) not possible or not worth it right now.
 
 ## Known gaps in what's built
 
-- ZAP and Nuclei scan as a logged-out visitor.
-- The Supabase advisor, the Vercel bypass header and the `@supabase/ssr` login cookie have only
-  been tested against the fake app, not a real project. They get tested when a project is connected.
+- ZAP and Nuclei log in as one test user (`scan_as`), so pages only other roles see are not scanned by them.
+- The `@supabase/ssr` login cookie has only been tested against the fake app. MGE Insights uses
+  the bearer header, which has been tested against its real test deployment.

@@ -536,6 +536,7 @@ jobs:
           import os
           import re
           import sys
+          import tomllib
           from pathlib import Path
 
           RAW = Path(os.environ["RAW_DIR"])
@@ -683,8 +684,10 @@ jobs:
                       ids = g.get("ids", [])
                       members = [vulns[i] for i in ids if i in vulns]
                       all_ids = sorted(set(ids) | set(g.get("aliases", [])))
+                      # Malware: an OpenSSF MAL- id, or GitHub's malware title ("Malicious code in <package>").
+                      # Not any summary with the word: "a malicious server can ..." describes an ordinary bug.
                       malicious = any(i.startswith("MAL-") for i in all_ids) or any(
-                          "malicious" in (m.get("summary") or "").lower() for m in members)
+                          (m.get("summary") or "").lower().startswith("malicious code in") for m in members)
                       sev = "unknown"
                       try:
                           score = float(g.get("max_severity") or "")
@@ -767,6 +770,16 @@ jobs:
           for f in access.get("findings", []):
               add("access", f["kind"], f["severity"], f["title"], f["where"], f["proof"], f["fix"], f["key"])
           inventory = {"Routes in the code that no access test covers": access.get("uncovered_routes", [])}
+
+          # Advisories OSV-Scanner was told to allow, so they stay visible in every report.
+          if (RAW / "osv-config.toml").exists():
+              try:
+                  allowed = tomllib.loads((RAW / "osv-config.toml").read_text()).get("IgnoredVulns", [])
+              except tomllib.TOMLDecodeError as e:
+                  allowed = [{"id": "osv-scanner.toml could not be read", "reason": str(e)}]
+              inventory["Advisories allowed for now (not blocking)"] = [
+                  f"{e.get('id')} until {e.get('ignoreUntil', 'no end date')}: {e.get('reason', 'no reason given')}"
+                  for e in allowed]
 
           # ---------- ZAP ----------
           zap = load("zap.json") or {}

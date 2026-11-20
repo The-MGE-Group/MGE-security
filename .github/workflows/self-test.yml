@@ -3,9 +3,13 @@
 # Weekly scan: the fake app in fixtures/live, started with and without planted problems.
 name: Self-test
 
+# Skipped when only text pages change (README, docs). Runs once per pull request, and on main.
 on:
   push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
 permissions:
@@ -23,6 +27,8 @@ jobs:
         run: python3 scripts/build.py --check
       - name: Report script handles sample Supabase advisor output
         run: python3 scripts/test_report.py
+      - name: Every allowed advisory has a reason and an end date
+        run: python3 scripts/test_exceptions.py
       - name: Weekly scan refuses production addresses
         run: python3 scripts/test_guard.py
       - name: Issues open once and close only when safe (fake GitHub)
