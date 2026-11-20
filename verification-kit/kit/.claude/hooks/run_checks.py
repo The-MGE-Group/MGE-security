@@ -45,6 +45,9 @@ def main():
     if fp and fp == state.get("last_pass"):
         sys.exit(0)
 
+    # Exception approved by the owner (2026-11-20): the command is the project's own check
+    # command from config.json, which Claude may not edit and CI guards (protected_paths).
+    # nosemgrep: subprocess-shell-true, dangerous-subprocess-use-audit -- runs the protected check_command
     res = subprocess.run(cmd, shell=True, cwd=PROJECT_DIR, capture_output=True, text=True)
     if res.returncode == 0:
         state.update(last_pass=fp, fail_rounds=0)
