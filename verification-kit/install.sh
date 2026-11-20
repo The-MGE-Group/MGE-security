@@ -19,7 +19,7 @@ KIT_CODE='^\.claude/hooks/|^scripts/verification-report\.sh$'
 while IFS= read -r -d '' src; do
   rel="${src#"$KIT"/}"
   case "$rel" in
-    .claude/settings.hooks.json|CLAUDE.verification.md|git-hooks/*) continue ;;
+    .claude/settings.hooks.json|CLAUDE.verification.md) continue ;;
   esac
   dst="$TARGET/$rel"
   if [ -e "$dst" ]; then
@@ -32,7 +32,7 @@ while IFS= read -r -d '' src; do
     mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; echo "  added    $rel"
   fi
 done < <(find "$KIT" -type f -print0)
-chmod +x "$TARGET"/.claude/hooks/*.py "$TARGET/scripts/verification-report.sh"
+chmod +x "$TARGET"/.claude/hooks/*.py "$TARGET/.claude/hooks/prepare-commit-msg" "$TARGET/scripts/verification-report.sh"
 
 # 2. CLAUDE.md block
 if grep -qs '>>> verification-kit' "$TARGET/CLAUDE.md"; then
@@ -92,17 +92,10 @@ if ! grep -qsx '.claude/verification/state/' "$TARGET/.gitignore"; then
   echo '.claude/verification/state/' >> "$TARGET/.gitignore"; echo "  added    .claude/verification/state/ to .gitignore"
 fi
 
-# 5. Git hook that stamps Claude's commits with Verified-by
+# 5. Git hook that stamps Claude's commits with Verified-by (also reinstalled at every session start)
 if git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
-  hooks_dir="$(cd "$TARGET" && git rev-parse --git-path hooks)"
-  case "$hooks_dir" in /*) ;; *) hooks_dir="$TARGET/$hooks_dir" ;; esac
-  mkdir -p "$hooks_dir"
-  if [ -e "$hooks_dir/prepare-commit-msg" ] && ! grep -q 'claude-verified-by' "$hooks_dir/prepare-commit-msg"; then
-    echo "  !! $hooks_dir/prepare-commit-msg exists; add the lines from kit/git-hooks/prepare-commit-msg to it yourself"
-  else
-    cp "$KIT/git-hooks/prepare-commit-msg" "$hooks_dir/prepare-commit-msg"
-    chmod +x "$hooks_dir/prepare-commit-msg"; echo "  added    git prepare-commit-msg hook (this clone only)"
-  fi
+  chmod +x "$TARGET/.claude/hooks/prepare-commit-msg"
+  CLAUDE_PROJECT_DIR="$TARGET" python3 "$TARGET/.claude/hooks/session_start.py" && echo "  added    git prepare-commit-msg hook"
 else
   echo "  !! not a git repo: skipped the commit-stamp hook"
 fi
@@ -117,5 +110,4 @@ Done. Next steps:
      "Require review from Code Owners" in branch protection.
   5. Commit. The commit gate starts in "observe" mode. After a week or two, run
      scripts/verification-report.sh, and if the would-block list looks right set gate_mode to "enforce".
-  6. Every other clone: run this installer once (git hooks are not shared by git).
 EOF

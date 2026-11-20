@@ -32,7 +32,7 @@ turned into new rules (and old rules get pruned).
 | Reliability checks trigger on the diff (their checklist has 39 items) | `.claude/verification/checklist.md` | Trigger / check / source table. Seeded with 7 generic starters to replace |
 | One reviewer, multiple rounds; REVIEW.md says what to focus on | `REVIEW.md` | For Claude Code Review on PRs: what Important means, Pre-existing, build on earlier rounds, cap nits, pulls in the checklist |
 | Changes can't modify their own checks | `.claude/hooks/protect_checks.py`, `.github/workflows/verification-integrity.yml`, `.github/CODEOWNERS.verification` | Blocks Claude's edits to the judging files; CI fails a PR that changes them without a `verification-change` label, reading the protected list from the **base** branch |
-| Start a new gate in observe mode; off / observe / enforce; stamp every commit, including "none" | `.claude/hooks/commit_gate.py`, git `prepare-commit-msg` | Blocks `git commit` if the session never ran `/verify` or `/code-review` (enforce), or just logs it (observe). Adds `Verified-by:` trailer. `Unverified: <reason>` in the message is the escape hatch; after 2 blocks the next commit goes through so Claude can't get stuck |
+| Start a new gate in observe mode; off / observe / enforce; stamp every commit, including "none" | `.claude/hooks/commit_gate.py`, `.claude/hooks/prepare-commit-msg` (installed into git by `session_start.py`) | Blocks `git commit` if the session never ran `/verify` or `/code-review` (enforce), or just logs it (observe). Adds `Verified-by:` trailer. `Unverified: <reason>` in the message is the escape hatch; after 2 blocks the next commit goes through so Claude can't get stuck |
 | Test your checks on what matters (reverts, rejected changes) | `scripts/verification-report.sh` | Counts commits by how they were verified, lists reverted commits and whether they had been verified, summarizes the gate log |
 | Turn misses into rules; three agents try to disprove a rule; human approves; prune | `.claude/skills/learn-from-miss/SKILL.md`, `.claude/verification/lessons.md` | `/learn-from-miss <PR>` drafts a rule with evidence; `/learn-from-miss prune` proposes removals. You promote rules by hand |
 | Flaky tests: no skips, sleeps or retries; delete with a written reason | `CLAUDE.md` block, verify skill, Stop hook message | Stated as a rule in three places Claude reads |
@@ -70,8 +70,8 @@ turned into new rules (and old rules get pruned).
   A script that writes files some other way gets past it. The real lock is CODEOWNERS plus the CI job.
 - **The gate checks the session, not the specific diff.** Running `/verify` once early in a long session counts for later
   commits too. The article's gate works at session level as well.
-- **The `Verified-by` stamp needs the git hook in each clone** (git doesn't share hooks). Run the installer once per clone,
-  including in cloud sessions, or commits there won't carry the trailer.
+- **The `Verified-by` stamp relies on a git hook.** Git doesn't share hooks, so a start-of-session hook copies it into
+  each clone, including fresh cloud sessions. Commits made outside Claude Code get no stamp until a session has run once.
 - **It measures reverts, not rejected PRs.** Tracking PRs a maintainer rejected needs the GitHub API; that's not included.
 - **REVIEW.md only matters if you use Claude Code Review** on pull requests. Local `/code-review` reads CLAUDE.md, not
   REVIEW.md ([docs](https://code.claude.com/docs/en/code-review-customize)).
