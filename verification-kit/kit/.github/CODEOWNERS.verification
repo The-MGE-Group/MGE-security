@@ -1,0 +1,9 @@
+# Append these lines to .github/CODEOWNERS and replace @your-handle with the people
+# who own the verification layer. With branch protection's "Require review from Code
+# Owners" on, a PR that edits these files can't merge without their approval.
+/REVIEW.md                                   @your-handle
+/.claude/settings.json                       @your-handle
+/.claude/hooks/                              @your-handle
+/.claude/verification/config.json            @your-handle
+/.claude/verification/checklist.md           @your-handle
+/.github/workflows/verification-integrity.yml @your-handle
