@@ -7,3 +7,10 @@
 /.claude/verification/config.json            @your-handle
 /.claude/verification/checklist.md           @your-handle
 /.github/workflows/verification-integrity.yml @your-handle
+# Security scan settings (MGE-security): so nobody can quietly switch the scan off or hide findings
+/.github/workflows/mge-security.yml           @your-handle
+/.github/workflows/mge-security-weekly.yml    @your-handle
+/.mge-security/                               @your-handle
+/.github/dependabot.yml                       @your-handle
+/.gitleaksignore                              @your-handle
+/osv-scanner.toml                             @your-handle

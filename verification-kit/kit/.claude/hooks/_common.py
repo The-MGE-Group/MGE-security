@@ -23,6 +23,12 @@ DEFAULT_CONFIG = {
         ".claude/verification/config.json",
         ".claude/verification/checklist.md",
         ".github/workflows/verification-integrity.yml",
+        ".github/workflows/mge-security.yml",
+        ".github/workflows/mge-security-weekly.yml",
+        ".mge-security/*",
+        ".github/dependabot.yml",
+        ".gitleaksignore",
+        "*osv-scanner.toml",
     ],
 }
 
