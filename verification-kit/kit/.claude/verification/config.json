@@ -1,0 +1,15 @@
+{
+  "gate_mode": "observe",
+  "check_command": "",
+  "max_fix_rounds": 3,
+  "blocks_before_letting_through": 2,
+  "verify_markers": ["verify", "code-review"],
+  "protected_paths": [
+    "REVIEW.md",
+    ".claude/settings.json",
+    ".claude/hooks/*",
+    ".claude/verification/config.json",
+    ".claude/verification/checklist.md",
+    ".github/workflows/verification-integrity.yml"
+  ]
+}

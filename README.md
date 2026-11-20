@@ -11,6 +11,9 @@ findings turn the check red and open a GitHub issue, and the issue closes itself
 scan no longer finds the problem. Why things are built this way: [docs/DECISIONS.md](docs/DECISIONS.md).
 What's next: [docs/ROADMAP.md](docs/ROADMAP.md).
 
+Separate from the security scans: [verification-kit/](verification-kit/README.md) sets up Claude Code's
+verify-before-commit workflow in any project with one command.
+
 ## What the pull-request scan checks
 
 | Check | Tool | Turns the check red when |

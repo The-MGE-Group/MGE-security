@@ -1,0 +1,17 @@
+#!/bin/sh
+# Adds a "Verified-by:" trailer to commits Claude makes.
+# The commit gate hook writes the value just before Claude runs `git commit`.
+# Human commits are left alone. Query later with:
+#   git log --format='%h %(trailers:key=Verified-by,valueonly) %s'
+msg_file="$1"
+stamp="$(git rev-parse --git-path claude-verified-by)"
+[ -f "$stamp" ] || exit 0
+
+# Ignore a stamp older than 10 minutes (left behind by a commit that failed).
+if [ -n "$(find "$stamp" -mmin -10 2>/dev/null)" ]; then
+  value="$(head -n 1 "$stamp")"
+  if ! grep -qi '^Verified-by:' "$msg_file"; then
+    git interpret-trailers --in-place --trailer "Verified-by: $value" "$msg_file"
+  fi
+fi
+rm -f "$stamp"
